@@ -51,8 +51,9 @@ logs/
 # Docker
 *.tar
 
-# Kubernetes secrets (actual values - don't commit!)
+# Kubernetes secrets and config (actual values - don't commit!)
 k8s-secrets.yaml
+k8s-config.yaml
 *-secret.yaml
 *-secrets.yaml
 
