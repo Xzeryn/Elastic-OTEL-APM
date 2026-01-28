@@ -1,0 +1,73 @@
+# =============================================================================
+# KUBERNETES CONFIGURATION VALUES TEMPLATE
+# =============================================================================
+# This file documents all configuration values that need to be customized
+# in the procurement-demo.yaml and elastic-otel-values-0.12.6.yaml files.
+#
+# These values CANNOT be externalized to ConfigMaps/Secrets because they are
+# used in places that require static YAML values (image names, hostnames, etc.)
+#
+# USAGE:
+#   1. Review each section below
+#   2. Search and replace the values in the respective YAML files
+#   3. Or use envsubst: envsubst < procurement-demo.yaml > procurement-demo-configured.yaml
+# =============================================================================
+
+# =============================================================================
+# DOCKER IMAGES (procurement-demo.yaml)
+# =============================================================================
+# Replace these image references with your Docker Hub username
+#
+# Current values to search for:
+#   skarter/procurement-api:v6
+#   skarter/document-service:v5
+#   skarter/payment-service:v1
+#   skarter/procurement-frontend:v14
+#
+# Replace with:
+#   <your-dockerhub-username>/procurement-api:v6
+#   <your-dockerhub-username>/document-service:v5
+#   <your-dockerhub-username>/payment-service:v1
+#   <your-dockerhub-username>/procurement-frontend:v14
+
+DOCKERHUB_USERNAME: "<your-dockerhub-username>"
+
+# =============================================================================
+# INGRESS CONFIGURATION (procurement-demo.yaml)
+# =============================================================================
+# Update the Ingress hostname to match your domain
+#
+# Current value to search for:
+#   demo.myhousetech.net
+#
+# Replace with your domain
+
+INGRESS_HOSTNAME: "<your-domain.com>"
+
+# =============================================================================
+# TLS SECRET NAME (procurement-demo.yaml)
+# =============================================================================
+# If using HTTPS, update the TLS secret name
+# This should match a secret created by cert-manager or manually
+#
+# Current value:
+#   demo-tls-secret
+
+TLS_SECRET_NAME: "<your-tls-secret-name>"
+
+# =============================================================================
+# QUICK REPLACE COMMANDS
+# =============================================================================
+# Run these commands to replace values (adjust as needed):
+#
+# # Replace Docker Hub username
+# sed -i 's/skarter\//<your-username>\//g' procurement-demo.yaml
+#
+# # Replace domain name
+# sed -i 's/demo\.myhousetech\.net/<your-domain>/g' procurement-demo.yaml
+#
+# # Or use envsubst (set environment variables first):
+# export DOCKERHUB_USERNAME="your-username"
+# export INGRESS_HOSTNAME="your-domain.com"
+# envsubst '$DOCKERHUB_USERNAME $INGRESS_HOSTNAME' < procurement-demo.yaml > configured.yaml
+# =============================================================================

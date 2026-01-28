@@ -1,0 +1,626 @@
+# =============================================================================
+# GOVERNMENT PROCUREMENT APM DEMO - Kubernetes Deployment Manifest
+# =============================================================================
+# A comprehensive demo showcasing Elastic APM with OpenTelemetry auto-instrumentation.
+#
+# ARCHITECTURE OVERVIEW:
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │  Browser (React + Elastic RUM)                                              │
+# │    └── Captures: page loads, route changes, user interactions, HTTP calls  │
+# │    └── Sends to: Elastic APM Server (direct)                               │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#                                    │
+#                                    ▼
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │  Nginx (in procurement-frontend pod)                                        │
+# │    └── Forwards: traceparent & tracestate headers                          │
+# │    └── Routes: /api/* → procurement-api:3000                               │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#                                    │
+#                                    ▼
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │  Backend Services (OTEL Auto-Instrumented)                                  │
+# │                                                                             │
+# │  procurement-api (Node.js)  ────┬────►  document-service (Python)          │
+# │         │                       │                │                          │
+# │         │                       └────►  payment-service (Java)             │
+# │         │                                        │                          │
+# │         ▼                                        ▼                          │
+# │     PostgreSQL  ◄────────────────────────────────┘                          │
+# │     Redis (cache)                                                           │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#                                    │
+#                                    ▼
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │  OTEL Collector Gateway (opentelemetry-kube-stack)                          │
+# │    └── Receives traces from: auto-instrumented backend services             │
+# │    └── Exports to: Elastic Cloud Managed OTLP Endpoint                     │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+# OTEL AUTO-INSTRUMENTATION:
+# --------------------------
+# The OpenTelemetry Operator automatically injects instrumentation agents into
+# pods based on annotations. No code changes required for basic tracing.
+#
+# Annotations used:
+#   instrumentation.opentelemetry.io/inject-nodejs: "namespace/instrumentation-name"
+#   instrumentation.opentelemetry.io/inject-python: "namespace/instrumentation-name"
+#   instrumentation.opentelemetry.io/inject-java: "namespace/instrumentation-name"
+#   instrumentation.opentelemetry.io/container-names: "container-name"
+#
+# DISTRIBUTED TRACING FLOW:
+# -------------------------
+# 1. User clicks button in React app
+# 2. RUM agent captures click and starts transaction
+# 3. HTTP request sent with traceparent header
+# 4. Nginx forwards headers to procurement-api
+# 5. procurement-api (auto-instrumented) receives trace context
+# 6. procurement-api calls document-service or payment-service
+# 7. Each service (auto-instrumented) continues the trace
+# 8. Database queries are captured as spans
+# 9. All traces exported to Elastic Cloud via OTEL Collector
+#
+# SERVICES:
+# ---------
+# - procurement-frontend: React + Nginx (port 80, exposed via Ingress)
+# - procurement-api: Node.js/Express API Gateway (port 3000)
+# - document-service: Python/Flask Document Management (port 5000)
+# - payment-service: Java/Spring Boot Payment Processing (port 8080)
+# - postgres: PostgreSQL 15 Database (port 5432)
+# - redis: Redis 7 Cache (port 6379)
+#
+# NAMESPACE: demo-apps
+# =============================================================================
+
+---
+# =============================================================================
+# POSTGRESQL DATABASE
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-script
+  namespace: demo-apps
+data:
+  init.sql: |
+    -- ==========================================================================
+    -- PROCUREMENT DATABASE SCHEMA
+    -- ==========================================================================
+    
+    -- Vendors table - stores supplier/vendor information
+    CREATE TABLE IF NOT EXISTS vendors (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      email VARCHAR(255),
+      phone VARCHAR(50),
+      address TEXT,
+      status VARCHAR(50) DEFAULT 'active',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    -- Invoices table - procurement invoice records
+    CREATE TABLE IF NOT EXISTS invoices (
+      id SERIAL PRIMARY KEY,
+      invoice_number VARCHAR(50) UNIQUE NOT NULL,
+      vendor_id INTEGER REFERENCES vendors(id),
+      amount DECIMAL(12, 2) NOT NULL,
+      currency VARCHAR(3) DEFAULT 'USD',
+      status VARCHAR(50) DEFAULT 'draft',
+      description TEXT,
+      due_date DATE,
+      submitted_at TIMESTAMP,
+      approved_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    -- Payments table - payment processing records
+    CREATE TABLE IF NOT EXISTS payments (
+      id SERIAL PRIMARY KEY,
+      payment_number VARCHAR(50) UNIQUE NOT NULL,
+      invoice_id INTEGER REFERENCES invoices(id),
+      amount DECIMAL(12, 2) NOT NULL,
+      payment_method VARCHAR(50),
+      status VARCHAR(50) DEFAULT 'pending',
+      processed_at TIMESTAMP,
+      confirmation_number VARCHAR(100),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    -- Documents table - uploaded document metadata
+    CREATE TABLE IF NOT EXISTS documents (
+      id SERIAL PRIMARY KEY,
+      invoice_id INTEGER REFERENCES invoices(id),
+      filename VARCHAR(255) NOT NULL,
+      original_filename VARCHAR(255),
+      file_size INTEGER,
+      mime_type VARCHAR(100),
+      document_type VARCHAR(50),
+      status VARCHAR(50) DEFAULT 'pending',
+      validated_at TIMESTAMP,
+      uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    -- Audit log table - tracks all changes
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id SERIAL PRIMARY KEY,
+      entity_type VARCHAR(50) NOT NULL,
+      entity_id INTEGER NOT NULL,
+      action VARCHAR(50) NOT NULL,
+      user_id VARCHAR(100),
+      details JSONB,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    -- Create indexes for better query performance
+    CREATE INDEX IF NOT EXISTS idx_invoices_vendor ON invoices(vendor_id);
+    CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status);
+    CREATE INDEX IF NOT EXISTS idx_payments_invoice ON payments(invoice_id);
+    CREATE INDEX IF NOT EXISTS idx_documents_invoice ON documents(invoice_id);
+    CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_logs(entity_type, entity_id);
+    
+    -- Insert sample vendors
+    INSERT INTO vendors (name, email, phone, status) VALUES
+      ('Acme Corporation', 'billing@acme.com', '555-0100', 'active'),
+      ('Global Supplies Inc', 'accounts@globalsupplies.com', '555-0101', 'active'),
+      ('Tech Solutions Ltd', 'invoices@techsolutions.com', '555-0102', 'active'),
+      ('Office Essentials', 'ar@officeessentials.com', '555-0103', 'active'),
+      ('Industrial Partners', 'finance@industrialpartners.com', '555-0104', 'active')
+    ON CONFLICT DO NOTHING;
+    
+    -- Insert sample invoices
+    INSERT INTO invoices (invoice_number, vendor_id, amount, status, description, due_date) VALUES
+      ('INV-2026-001', 1, 15000.00, 'approved', 'Q1 Office Supplies', '2026-02-15'),
+      ('INV-2026-002', 2, 45000.00, 'pending', 'IT Equipment Purchase', '2026-02-28'),
+      ('INV-2026-003', 3, 8500.00, 'draft', 'Software Licenses', '2026-03-01'),
+      ('INV-2026-004', 4, 3200.00, 'submitted', 'Furniture Order', '2026-02-20'),
+      ('INV-2026-005', 5, 125000.00, 'pending', 'Manufacturing Equipment', '2026-03-15')
+    ON CONFLICT DO NOTHING;
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: demo-apps
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: demo-apps
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: procurement
+        - name: POSTGRES_USER
+          value: procurement_user
+        - name: POSTGRES_PASSWORD
+          value: procurement_pass
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        - name: init-script
+          mountPath: /docker-entrypoint-initdb.d
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+      - name: init-script
+        configMap:
+          name: postgres-init-script
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: demo-apps
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+
+---
+# =============================================================================
+# REDIS CACHE
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: demo-apps
+  labels:
+    app: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: demo-apps
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+
+---
+# =============================================================================
+# NODE.JS PROCUREMENT API
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: procurement-api
+  namespace: demo-apps
+  labels:
+    app: procurement-api
+    demo-type: nodejs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: procurement-api
+  template:
+    metadata:
+      labels:
+        app: procurement-api
+        demo-type: nodejs
+      annotations:
+        instrumentation.opentelemetry.io/inject-nodejs: "opentelemetry-operator-system/elastic-instrumentation"
+        instrumentation.opentelemetry.io/container-names: "procurement-api"
+    spec:
+      containers:
+      - name: procurement-api
+        image: skarter/procurement-api:v6
+        ports:
+        - containerPort: 3000
+        env:
+        - name: SERVICE_NAME
+          value: "procurement-api"
+        - name: SERVICE_VERSION
+          value: "1.0.0"
+        - name: DEPLOYMENT_ENVIRONMENT
+          value: "K8s-OTEL"
+        - name: POSTGRES_HOST
+          value: "postgres"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_DB
+          value: "procurement"
+        - name: POSTGRES_USER
+          value: "procurement_user"
+        - name: POSTGRES_PASSWORD
+          value: "procurement_pass"
+        - name: REDIS_HOST
+          value: "redis"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: DOCUMENT_SERVICE_URL
+          value: "http://document-service:5000"
+        - name: PAYMENT_SERVICE_URL
+          value: "http://payment-service:8080"
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: "service.name=procurement-api,deployment.environment=K8s-OTEL,service.environment=K8s-OTEL"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "300m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: procurement-api
+  namespace: demo-apps
+spec:
+  selector:
+    app: procurement-api
+  ports:
+  - port: 3000
+    targetPort: 3000
+
+---
+# =============================================================================
+# PYTHON DOCUMENT SERVICE
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: document-service
+  namespace: demo-apps
+  labels:
+    app: document-service
+    demo-type: python
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: document-service
+  template:
+    metadata:
+      labels:
+        app: document-service
+        demo-type: python
+      annotations:
+        instrumentation.opentelemetry.io/inject-python: "opentelemetry-operator-system/elastic-instrumentation"
+        instrumentation.opentelemetry.io/container-names: "document-service"
+    spec:
+      containers:
+      - name: document-service
+        image: skarter/document-service:v5
+        ports:
+        - containerPort: 5000
+        env:
+        - name: SERVICE_NAME
+          value: "document-service"
+        - name: SERVICE_VERSION
+          value: "1.0.0"
+        - name: DEPLOYMENT_ENVIRONMENT
+          value: "K8s-OTEL"
+        - name: POSTGRES_HOST
+          value: "postgres"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_DB
+          value: "procurement"
+        - name: POSTGRES_USER
+          value: "procurement_user"
+        - name: POSTGRES_PASSWORD
+          value: "procurement_pass"
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: "service.name=document-service,deployment.environment=K8s-OTEL,service.environment=K8s-OTEL"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "300m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: document-service
+  namespace: demo-apps
+spec:
+  selector:
+    app: document-service
+  ports:
+  - port: 5000
+    targetPort: 5000
+
+---
+# =============================================================================
+# JAVA PAYMENT SERVICE
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: demo-apps
+  labels:
+    app: payment-service
+    demo-type: java
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payment-service
+  template:
+    metadata:
+      labels:
+        app: payment-service
+        demo-type: java
+      annotations:
+        instrumentation.opentelemetry.io/inject-java: "opentelemetry-operator-system/elastic-instrumentation"
+        instrumentation.opentelemetry.io/container-names: "payment-service"
+    spec:
+      containers:
+      - name: payment-service
+        image: skarter/payment-service:v1
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SERVICE_NAME
+          value: "payment-service"
+        - name: SERVICE_VERSION
+          value: "1.0.0"
+        - name: DEPLOYMENT_ENVIRONMENT
+          value: "K8s-OTEL"
+        - name: SPRING_DATASOURCE_URL
+          value: "jdbc:postgresql://postgres:5432/procurement"
+        - name: SPRING_DATASOURCE_USERNAME
+          value: "procurement_user"
+        - name: SPRING_DATASOURCE_PASSWORD
+          value: "procurement_pass"
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: "service.name=payment-service,deployment.environment=K8s-OTEL,service.environment=K8s-OTEL"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        readinessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: demo-apps
+spec:
+  selector:
+    app: payment-service
+  ports:
+  - port: 8080
+    targetPort: 8080
+
+---
+# =============================================================================
+# REACT FRONTEND
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: procurement-frontend
+  namespace: demo-apps
+  labels:
+    app: procurement-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: procurement-frontend
+  template:
+    metadata:
+      labels:
+        app: procurement-frontend
+    spec:
+      containers:
+      - name: procurement-frontend
+        image: skarter/procurement-frontend:v14
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 80
+        env:
+        - name: SERVICE_NAME
+          value: "procurement-frontend"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: procurement-frontend
+  namespace: demo-apps
+spec:
+  selector:
+    app: procurement-frontend
+  ports:
+  - port: 80
+    targetPort: 80
+
+---
+# =============================================================================
+# INGRESS
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: procurement-ingress
+  namespace: demo-apps
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  tls:
+  - hosts:
+    - demo.myhousetech.net
+    secretName: demo-tls-secret
+  rules:
+  - host: demo.myhousetech.net
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: procurement-frontend
+            port:
+              number: 80
