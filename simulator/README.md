@@ -108,29 +108,40 @@ ENABLE_INVOICES=true INVOICE_FREQUENCY=2 CLEANUP_AGE_HOURS=12 npm start
 ### Build
 
 ```bash
-docker build -t <username>/procurement-simulator:v2 .
+docker build -t <username>/procurement-simulator:v4 .
 ```
 
 ### Run
 
 ```bash
 # Default configuration
-docker run --rm <username>/procurement-simulator:v2
+docker run --rm <username>/procurement-simulator:v4
 
 # Browse only
 docker run --rm \
   -e ENABLE_UPLOADS=false \
   -e ENABLE_INVOICES=false \
-  <username>/procurement-simulator:v2
+  <username>/procurement-simulator:v4
 
 # Custom cleanup settings
 docker run --rm \
   -e CLEANUP_AGE_HOURS=12 \
   -e CLEANUP_FREQUENCY=5 \
-  <username>/procurement-simulator:v2
+  <username>/procurement-simulator:v4
 ```
 
 ## Kubernetes Deployment
+
+### Setup
+
+1. Copy the template to create your deployment file:
+   ```bash
+   cp simulator-deployment-template.yaml simulator-deployment.yaml
+   ```
+
+2. Edit `simulator-deployment.yaml` and replace:
+   - `<dockerhub-username>` with your Docker Hub username
+   - `<your-domain>` with your application domain
 
 ### Deploy
 

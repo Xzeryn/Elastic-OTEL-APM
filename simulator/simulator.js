@@ -307,14 +307,14 @@ async function cleanupSimulatorRecords(page) {
   log.data(`Cleaning up simulator records older than ${config.cleanupAgeHours} hours...`);
   
   try {
-    const response = await page.evaluate(async (apiUrl, maxAgeHours) => {
+    const response = await page.evaluate(async ({ apiUrl, maxAgeHours }) => {
       const res = await fetch(`${apiUrl}/api/simulator/cleanup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ maxAgeHours })
       });
       return res.json();
-    }, config.apiUrl, config.cleanupAgeHours);
+    }, { apiUrl: config.apiUrl, maxAgeHours: config.cleanupAgeHours });
     
     if (response.success) {
       log.data(`Cleanup complete: ${response.deleted.invoices} invoices, ${response.deleted.payments} payments, ${response.deleted.documents} documents`);

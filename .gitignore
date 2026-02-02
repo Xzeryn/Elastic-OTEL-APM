@@ -58,8 +58,9 @@ k8s-config.yaml
 *-secrets.yaml
 kubeconfig
 
-# Simulator test files
+# Simulator test files and deployment config (contains domain/username)
 simulator/test-files/
+simulator/simulator-deployment.yaml
 
 # Archived/backup files
 *.backup

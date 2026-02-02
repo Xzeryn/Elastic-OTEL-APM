@@ -1,8 +1,13 @@
 # =============================================================================
-# PROCUREMENT SIMULATOR - KUBERNETES DEPLOYMENT
+# PROCUREMENT SIMULATOR - KUBERNETES DEPLOYMENT TEMPLATE
 # =============================================================================
 # Deploys the APM traffic simulator as a Kubernetes pod.
 # Creates realistic data (invoices, documents, payments) with auto-cleanup.
+#
+# SETUP:
+#   1. Copy this file to simulator-deployment.yaml
+#   2. Replace <dockerhub-username> with your Docker Hub username
+#   3. Replace <your-domain> with your application domain
 #
 # USAGE:
 #   kubectl apply -f simulator-deployment.yaml -n demo-apps
@@ -34,20 +39,26 @@ spec:
       labels:
         app: procurement-simulator
         component: testing
+      annotations:
+        # Explicitly disable OTEL auto-instrumentation - simulator should not be traced
+        instrumentation.opentelemetry.io/inject-nodejs: "false"
+        instrumentation.opentelemetry.io/inject-python: "false"
+        instrumentation.opentelemetry.io/inject-java: "false"
     spec:
       containers:
       - name: simulator
-        # Replace with your Docker Hub username
-        image: <dockerhub-username>/procurement-simulator:v2
+        # TODO: Replace with your Docker Hub username
+        image: <dockerhub-username>/procurement-simulator:v4
         imagePullPolicy: Always
         env:
+        # TODO: Replace with your application domain
         # Target URL (use external URL for real RUM traces)
         - name: BASE_URL
-          value: "https://demo.myhousetech.net"
+          value: "https://<your-domain>"
         
         # API URL (same as BASE_URL for external access)
         - name: API_URL
-          value: "https://demo.myhousetech.net"
+          value: "https://<your-domain>"
         
         # Delay between actions (ms)
         - name: ACTION_DELAY
@@ -135,10 +146,10 @@ spec:
 #         spec:
 #           containers:
 #           - name: simulator
-#             image: <dockerhub-username>/procurement-simulator:v2
+#             image: <dockerhub-username>/procurement-simulator:v4
 #             env:
 #             - name: BASE_URL
-#               value: "https://demo.myhousetech.net"
+#               value: "https://<your-domain>"
 #             - name: MAX_CYCLES
 #               value: "3"
 #             - name: ENABLE_INVOICES
