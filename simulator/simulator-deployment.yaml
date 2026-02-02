@@ -2,6 +2,7 @@
 # PROCUREMENT SIMULATOR - KUBERNETES DEPLOYMENT
 # =============================================================================
 # Deploys the APM traffic simulator as a Kubernetes pod.
+# Creates realistic data (invoices, documents, payments) with auto-cleanup.
 #
 # USAGE:
 #   kubectl apply -f simulator-deployment.yaml -n demo-apps
@@ -37,11 +38,15 @@ spec:
       containers:
       - name: simulator
         # Replace with your Docker Hub username
-        image: <dockerhub-username>/procurement-simulator:v1
+        image: <dockerhub-username>/procurement-simulator:v2
         imagePullPolicy: Always
         env:
-        # Target URL (use internal service URL for in-cluster, external for real RUM)
+        # Target URL (use external URL for real RUM traces)
         - name: BASE_URL
+          value: "https://demo.myhousetech.net"
+        
+        # API URL (same as BASE_URL for external access)
+        - name: API_URL
           value: "https://demo.myhousetech.net"
         
         # Delay between actions (ms)
@@ -56,9 +61,25 @@ spec:
         - name: ENABLE_UPLOADS
           value: "true"
         
-        # Upload every N cycles (set higher to reduce upload frequency)
+        # Upload every N cycles
         - name: UPLOAD_FREQUENCY
           value: "5"
+        
+        # Enable/disable invoice creation
+        - name: ENABLE_INVOICES
+          value: "true"
+        
+        # Create invoice every N cycles
+        - name: INVOICE_FREQUENCY
+          value: "3"
+        
+        # Cleanup old records every N cycles
+        - name: CLEANUP_FREQUENCY
+          value: "10"
+        
+        # Delete simulator records older than X hours
+        - name: CLEANUP_AGE_HOURS
+          value: "24"
         
         # Run headless (must be true in K8s)
         - name: HEADLESS
@@ -97,8 +118,7 @@ spec:
 # =============================================================================
 # ALTERNATIVE: CRONJOB FOR SCHEDULED SIMULATION
 # =============================================================================
-# Uncomment this section if you prefer to run the simulator on a schedule
-# instead of continuously.
+# Uncomment to run simulator on a schedule instead of continuously.
 # =============================================================================
 
 # apiVersion: batch/v1
@@ -115,14 +135,16 @@ spec:
 #         spec:
 #           containers:
 #           - name: simulator
-#             image: <dockerhub-username>/procurement-simulator:v1
+#             image: <dockerhub-username>/procurement-simulator:v2
 #             env:
 #             - name: BASE_URL
 #               value: "https://demo.myhousetech.net"
 #             - name: MAX_CYCLES
-#               value: "3"  # Run 3 cycles then stop
+#               value: "3"
+#             - name: ENABLE_INVOICES
+#               value: "true"
 #             - name: ENABLE_UPLOADS
 #               value: "true"
-#             - name: UPLOAD_FREQUENCY
-#               value: "3"  # Upload on last cycle
+#             - name: CLEANUP_FREQUENCY
+#               value: "1"  # Cleanup on first cycle
 #           restartPolicy: OnFailure

@@ -1,6 +1,6 @@
 # Procurement Demo APM Traffic Simulator
 
-A Playwright-based simulator that generates real user traffic to the Procurement Demo application, creating authentic APM data including:
+A Playwright-based simulator that generates real user traffic to the Procurement Demo app, creating authentic APM data including:
 
 - **Elastic RUM traces** - Frontend user interactions, page loads, route changes
 - **Distributed backend traces** - Node.js → Python → Java service calls
@@ -9,16 +9,22 @@ A Playwright-based simulator that generates real user traffic to the Procurement
 
 ## Features
 
-- Simulates realistic user behavior (navigation, clicks, uploads, payments)
-- Configurable upload frequency (or disable entirely)
-- Adjustable timing between actions
-- Runs headless or with visible browser
-- Docker support for containerized deployment
-- Kubernetes deployment manifests included
+- **Realistic user behavior** - Navigation, clicks, form submissions
+- **Data creation** - Creates invoices, uploads documents, processes payments
+- **Auto-cleanup** - Automatically deletes old simulator records (SIM-* prefix)
+- **Configurable frequency** - Control how often data is created/cleaned
+- **Docker & Kubernetes support** - Containerized deployment included
+
+## Data Management
+
+All simulator-created records are prefixed with `SIM-` for easy identification:
+- Invoices: `SIM-INV-2026-xxxxx`
+- Documents: `SIM-test-document-xxxxx`
+- Payments: `SIM-PAY-xxxxx`
+
+Records are automatically cleaned up based on `CLEANUP_AGE_HOURS` (default: 24 hours).
 
 ## Quick Start
-
-### Local Development
 
 ```bash
 # Install dependencies
@@ -30,36 +36,50 @@ npx playwright install chromium
 # Run with defaults
 npm start
 
-# Run without uploads
-npm run start:no-uploads
+# Browse only (no data creation)
+npm run start:browse-only
 
-# Run faster (1 second between actions)
-npm run start:fast
+# Watch the browser
+npm run start:visible
 ```
 
-### Configuration
+## Configuration
 
 All configuration is via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BASE_URL` | `https://demo.myhousetech.net` | Target application URL |
+| `API_URL` | Same as BASE_URL | API URL for direct calls |
 | `ACTION_DELAY` | `2000` | Delay between actions (ms) |
 | `CYCLE_DELAY` | `5000` | Delay between full cycles (ms) |
 | `ENABLE_UPLOADS` | `true` | Enable document upload simulation |
 | `UPLOAD_FREQUENCY` | `5` | Upload every N cycles |
+| `ENABLE_INVOICES` | `true` | Enable invoice creation |
+| `INVOICE_FREQUENCY` | `3` | Create invoice every N cycles |
+| `CLEANUP_FREQUENCY` | `10` | Cleanup old records every N cycles |
+| `CLEANUP_AGE_HOURS` | `24` | Delete records older than X hours |
 | `HEADLESS` | `true` | Run browser in headless mode |
 | `MAX_CYCLES` | `0` | Max cycles to run (0 = infinite) |
 | `VERBOSE` | `false` | Enable verbose logging |
 
-### Examples
+## Examples
 
 ```bash
-# Disable uploads entirely
-ENABLE_UPLOADS=false npm start
+# Disable all data creation (browse only)
+ENABLE_UPLOADS=false ENABLE_INVOICES=false npm start
 
-# Upload less frequently (every 10 cycles)
+# Create invoices more frequently
+INVOICE_FREQUENCY=1 npm start
+
+# Less frequent uploads
 UPLOAD_FREQUENCY=10 npm start
+
+# Faster cleanup (delete records older than 6 hours)
+CLEANUP_AGE_HOURS=6 npm start
+
+# More frequent cleanup
+CLEANUP_FREQUENCY=5 npm start
 
 # Watch the browser (useful for debugging)
 HEADLESS=false npm start
@@ -67,39 +87,47 @@ HEADLESS=false npm start
 # Run just 5 cycles then stop
 MAX_CYCLES=5 npm start
 
-# Slower simulation (5 seconds between actions)
-ACTION_DELAY=5000 npm start
-
-# Custom URL
-BASE_URL=http://localhost:3000 npm start
-
 # Combine options
-ENABLE_UPLOADS=true UPLOAD_FREQUENCY=10 ACTION_DELAY=3000 HEADLESS=false npm start
+ENABLE_INVOICES=true INVOICE_FREQUENCY=2 CLEANUP_AGE_HOURS=12 npm start
 ```
+
+## NPM Scripts
+
+| Script | Description |
+|--------|-------------|
+| `npm start` | Run with default settings |
+| `npm run start:no-uploads` | Disable document uploads |
+| `npm run start:no-invoices` | Disable invoice creation |
+| `npm run start:browse-only` | Navigation only, no data creation |
+| `npm run start:fast` | Faster simulation (1s action, 2s cycle) |
+| `npm run start:slow` | Slower simulation (5s action, 10s cycle) |
+| `npm run start:visible` | Show browser window |
 
 ## Docker
 
 ### Build
 
 ```bash
-docker build -t <username>/procurement-simulator:v1 .
+docker build -t <username>/procurement-simulator:v2 .
 ```
 
 ### Run
 
 ```bash
 # Default configuration
-docker run --rm <username>/procurement-simulator:v1
+docker run --rm <username>/procurement-simulator:v2
 
-# Disable uploads
-docker run --rm -e ENABLE_UPLOADS=false <username>/procurement-simulator:v1
-
-# Custom configuration
+# Browse only
 docker run --rm \
-  -e BASE_URL=https://your-domain.com \
-  -e UPLOAD_FREQUENCY=10 \
-  -e ACTION_DELAY=3000 \
-  <username>/procurement-simulator:v1
+  -e ENABLE_UPLOADS=false \
+  -e ENABLE_INVOICES=false \
+  <username>/procurement-simulator:v2
+
+# Custom cleanup settings
+docker run --rm \
+  -e CLEANUP_AGE_HOURS=12 \
+  -e CLEANUP_FREQUENCY=5 \
+  <username>/procurement-simulator:v2
 ```
 
 ## Kubernetes Deployment
@@ -107,85 +135,63 @@ docker run --rm \
 ### Deploy
 
 ```bash
-# Update the image name in simulator-deployment.yaml first
 kubectl apply -f simulator-deployment.yaml -n demo-apps
 ```
 
 ### Monitor
 
 ```bash
-# View logs
 kubectl logs -f deployment/procurement-simulator -n demo-apps
-
-# Check status
-kubectl get pods -n demo-apps -l app=procurement-simulator
 ```
 
 ### Control
 
 ```bash
-# Stop simulator (scale to 0)
+# Stop simulator
 kubectl scale deployment/procurement-simulator --replicas=0 -n demo-apps
 
 # Start simulator
 kubectl scale deployment/procurement-simulator --replicas=1 -n demo-apps
-
-# Remove entirely
-kubectl delete -f simulator-deployment.yaml -n demo-apps
 ```
 
-## Simulated Actions
+## API Endpoints Used
 
-Each cycle performs a randomized sequence of:
+The simulator uses these API endpoints:
 
-1. **Dashboard** - View dashboard, click refresh button
-2. **Invoices** - Navigate to invoices, click on invoice rows
-3. **Documents** - View document list
-4. **Payments** - View payments, attempt to process payments
-5. **Vendors** - View vendor list, click on vendor rows
-6. **Architecture Modal** - Open and close the architecture diagram
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/vendors` | Fetch vendors for invoice creation |
+| `POST /api/simulator/cleanup` | Delete old SIM-* records |
+| `GET /api/simulator/stats` | Get count of simulator records |
 
-**Document Upload** (if enabled) runs every N cycles:
-- Creates a temporary test file
-- Selects the file via file input
-- Clicks the upload button
-- Cleans up old test files automatically
+## Simulated Workflow
 
-## APM Data Generated
+Each cycle performs:
 
-The simulator generates the following trace types:
-
-| Trace Type | Description |
-|------------|-------------|
-| `page-load` | Initial page loads |
-| `route-change` | SPA navigation between pages |
-| `user-interaction` | Click events on buttons and elements |
-| `http-request` | API calls to backend services |
-
-Backend services will show correlated spans:
-- `procurement-api` - API Gateway handling
-- `document-service` - Document processing (Python)
-- `payment-service` - Payment processing (Java)
-- PostgreSQL queries
-- Redis cache operations
+1. **Navigation** - Dashboard, Invoices, Documents, Payments, Vendors (randomized order)
+2. **Interactions** - Click rows, refresh dashboard, view architecture modal
+3. **Invoice Creation** (every N cycles) - Create invoice → Submit → Approve
+4. **Document Upload** (every N cycles) - Upload test document
+5. **Payment Processing** - Process available approved invoices
+6. **Cleanup** (every N cycles) - Delete old SIM-* records
 
 ## Troubleshooting
 
 ### Browser not launching
 
 ```bash
-# Ensure Playwright browsers are installed
 npx playwright install chromium
 ```
 
-### Connection refused
+### Cleanup not working
 
-- Verify `BASE_URL` is correct and accessible
-- Check if the application is running
-- Ensure network connectivity (if running in container)
+Check that the API supports the cleanup endpoints:
+```bash
+curl -X POST https://demo.myhousetech.net/api/simulator/cleanup \
+  -H "Content-Type: application/json" \
+  -d '{"maxAgeHours": 24}'
+```
 
-### Uploads failing
+### Invoice creation failing
 
-- Verify the document upload feature is working in the app
-- Check browser console for errors (run with `HEADLESS=false`)
-- Enable verbose logging: `VERBOSE=true npm start`
+The simulator attempts to create invoices through the UI. If the UI doesn't have a "New Invoice" button visible, invoice creation will be skipped. Run with `HEADLESS=false` to debug.

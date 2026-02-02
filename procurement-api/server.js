@@ -523,6 +523,96 @@ app.get('/api/payments', async (req, res) => {
 });
 
 // =============================================================================
+// SIMULATOR CLEANUP ENDPOINTS
+// =============================================================================
+// These endpoints are used by the simulator to clean up old test data.
+// Records created by the simulator are prefixed with "SIM-" for identification.
+
+/**
+ * Delete old simulator-created records
+ * POST /api/simulator/cleanup
+ * Body: { maxAgeHours: 24 }
+ */
+app.post('/api/simulator/cleanup', async (req, res) => {
+  const maxAgeHours = parseInt(req.body.maxAgeHours) || 24;
+  console.log(`Cleaning up simulator records older than ${maxAgeHours} hours...`);
+  
+  try {
+    const results = {
+      invoices: 0,
+      payments: 0,
+      documents: 0
+    };
+    
+    // Delete old simulator payments first (foreign key constraint)
+    const paymentsResult = await pool.query(`
+      DELETE FROM payments 
+      WHERE payment_number LIKE 'SIM-%' 
+      AND created_at < NOW() - INTERVAL '${maxAgeHours} hours'
+      RETURNING id
+    `);
+    results.payments = paymentsResult.rowCount;
+    
+    // Delete old simulator documents
+    const documentsResult = await pool.query(`
+      DELETE FROM documents 
+      WHERE filename LIKE 'SIM-%' 
+      AND uploaded_at < NOW() - INTERVAL '${maxAgeHours} hours'
+      RETURNING id
+    `);
+    results.documents = documentsResult.rowCount;
+    
+    // Delete old simulator invoices
+    const invoicesResult = await pool.query(`
+      DELETE FROM invoices 
+      WHERE invoice_number LIKE 'SIM-%' 
+      AND created_at < NOW() - INTERVAL '${maxAgeHours} hours'
+      RETURNING id
+    `);
+    results.invoices = invoicesResult.rowCount;
+    
+    // Invalidate cache
+    await redisClient.del('dashboard_metrics');
+    
+    const totalDeleted = results.invoices + results.payments + results.documents;
+    console.log(`Cleanup complete: ${totalDeleted} records deleted`);
+    
+    res.json({
+      success: true,
+      message: `Cleaned up ${totalDeleted} simulator records`,
+      deleted: results
+    });
+  } catch (error) {
+    console.error('Cleanup error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Get count of simulator records
+ * GET /api/simulator/stats
+ */
+app.get('/api/simulator/stats', async (req, res) => {
+  try {
+    const [invoices, payments, documents] = await Promise.all([
+      pool.query(`SELECT COUNT(*) as count FROM invoices WHERE invoice_number LIKE 'SIM-%'`),
+      pool.query(`SELECT COUNT(*) as count FROM payments WHERE payment_number LIKE 'SIM-%'`),
+      pool.query(`SELECT COUNT(*) as count FROM documents WHERE filename LIKE 'SIM-%'`)
+    ]);
+    
+    res.json({
+      simulator_records: {
+        invoices: parseInt(invoices.rows[0].count),
+        payments: parseInt(payments.rows[0].count),
+        documents: parseInt(documents.rows[0].count)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// =============================================================================
 // ERROR ENDPOINT - For testing error tracking
 // =============================================================================
 app.get('/api/error', (req, res) => {
