@@ -48,7 +48,7 @@ spec:
       containers:
       - name: simulator
         # TODO: Replace with your Docker Hub username
-        image: <dockerhub-username>/procurement-simulator:v5
+        image: <dockerhub-username>/procurement-simulator:v6
         imagePullPolicy: Always
         env:
         # TODO: Replace with your application domain
@@ -146,7 +146,7 @@ spec:
 #         spec:
 #           containers:
 #           - name: simulator
-#             image: <dockerhub-username>/procurement-simulator:v5
+#             image: <dockerhub-username>/procurement-simulator:v6
 #             env:
 #             - name: BASE_URL
 #               value: "https://<your-domain>"

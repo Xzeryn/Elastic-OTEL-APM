@@ -120,9 +120,9 @@ const createTestFile = () => {
     fs.mkdirSync(testDir, { recursive: true });
   }
   
-  // Random file size between 1KB and 3MB
-  const minSize = 1024;           // 1 KB
-  const maxSize = 3 * 1024 * 1024; // 3 MB
+  // Random file size between 300KB and 4MB
+  const minSize = 300 * 1024;      // 300 KB
+  const maxSize = 4 * 1024 * 1024; // 4 MB
   const targetSize = Math.floor(Math.random() * (maxSize - minSize) + minSize);
   
   const filename = `SIM-test-document-${Date.now()}.txt`;
