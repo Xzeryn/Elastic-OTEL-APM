@@ -331,7 +331,7 @@ spec:
     spec:
       containers:
       - name: procurement-api
-        image: skarter/procurement-api:v6
+        image: skarter/procurement-api:v7
         ports:
         - containerPort: 3000
         env:

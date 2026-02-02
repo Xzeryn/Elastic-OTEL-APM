@@ -19,13 +19,13 @@
 # Replace these image references with your Docker Hub username
 #
 # Current values to search for:
-#   skarter/procurement-api:v6
+#   skarter/procurement-api:v7
 #   skarter/document-service:v5
 #   skarter/payment-service:v1
 #   skarter/procurement-frontend:v14
 #
 # Replace with:
-#   <your-dockerhub-username>/procurement-api:v6
+#   <your-dockerhub-username>/procurement-api:v7
 #   <your-dockerhub-username>/document-service:v5
 #   <your-dockerhub-username>/payment-service:v1
 #   <your-dockerhub-username>/procurement-frontend:v14
