@@ -1,0 +1,18 @@
+{
+  "name": "procurement-simulator",
+  "version": "1.0.0",
+  "description": "Playwright-based simulator for generating APM traffic to the Procurement Demo",
+  "main": "simulator.js",
+  "scripts": {
+    "start": "node simulator.js",
+    "start:no-uploads": "ENABLE_UPLOADS=false node simulator.js",
+    "start:fast": "ACTION_DELAY=1000 node simulator.js",
+    "start:slow": "ACTION_DELAY=5000 node simulator.js"
+  },
+  "dependencies": {
+    "playwright": "^1.40.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

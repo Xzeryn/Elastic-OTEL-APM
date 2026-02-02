@@ -1,0 +1,128 @@
+# =============================================================================
+# PROCUREMENT SIMULATOR - KUBERNETES DEPLOYMENT
+# =============================================================================
+# Deploys the APM traffic simulator as a Kubernetes pod.
+#
+# USAGE:
+#   kubectl apply -f simulator-deployment.yaml -n demo-apps
+#   kubectl delete -f simulator-deployment.yaml -n demo-apps
+#
+# VIEW LOGS:
+#   kubectl logs -f deployment/procurement-simulator -n demo-apps
+#
+# SCALE:
+#   kubectl scale deployment/procurement-simulator --replicas=0 -n demo-apps  # Stop
+#   kubectl scale deployment/procurement-simulator --replicas=1 -n demo-apps  # Start
+# =============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: procurement-simulator
+  namespace: demo-apps
+  labels:
+    app: procurement-simulator
+    component: testing
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: procurement-simulator
+  template:
+    metadata:
+      labels:
+        app: procurement-simulator
+        component: testing
+    spec:
+      containers:
+      - name: simulator
+        # Replace with your Docker Hub username
+        image: <dockerhub-username>/procurement-simulator:v1
+        imagePullPolicy: Always
+        env:
+        # Target URL (use internal service URL for in-cluster, external for real RUM)
+        - name: BASE_URL
+          value: "https://demo.myhousetech.net"
+        
+        # Delay between actions (ms)
+        - name: ACTION_DELAY
+          value: "2000"
+        
+        # Delay between cycles (ms)
+        - name: CYCLE_DELAY
+          value: "5000"
+        
+        # Enable/disable document uploads
+        - name: ENABLE_UPLOADS
+          value: "true"
+        
+        # Upload every N cycles (set higher to reduce upload frequency)
+        - name: UPLOAD_FREQUENCY
+          value: "5"
+        
+        # Run headless (must be true in K8s)
+        - name: HEADLESS
+          value: "true"
+        
+        # Maximum cycles (0 = infinite)
+        - name: MAX_CYCLES
+          value: "0"
+        
+        # Verbose logging
+        - name: VERBOSE
+          value: "false"
+        
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        
+        # Temporary storage for test files
+        volumeMounts:
+        - name: test-files
+          mountPath: /app/test-files
+      
+      volumes:
+      - name: test-files
+        emptyDir: {}
+      
+      # Optional: Use imagePullSecrets if your image is private
+      # imagePullSecrets:
+      # - name: dockerhub-credentials
+
+---
+# =============================================================================
+# ALTERNATIVE: CRONJOB FOR SCHEDULED SIMULATION
+# =============================================================================
+# Uncomment this section if you prefer to run the simulator on a schedule
+# instead of continuously.
+# =============================================================================
+
+# apiVersion: batch/v1
+# kind: CronJob
+# metadata:
+#   name: procurement-simulator-cron
+#   namespace: demo-apps
+# spec:
+#   # Run every 30 minutes
+#   schedule: "*/30 * * * *"
+#   jobTemplate:
+#     spec:
+#       template:
+#         spec:
+#           containers:
+#           - name: simulator
+#             image: <dockerhub-username>/procurement-simulator:v1
+#             env:
+#             - name: BASE_URL
+#               value: "https://demo.myhousetech.net"
+#             - name: MAX_CYCLES
+#               value: "3"  # Run 3 cycles then stop
+#             - name: ENABLE_UPLOADS
+#               value: "true"
+#             - name: UPLOAD_FREQUENCY
+#               value: "3"  # Upload on last cycle
+#           restartPolicy: OnFailure

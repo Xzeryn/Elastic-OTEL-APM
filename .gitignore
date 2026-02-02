@@ -57,6 +57,9 @@ k8s-config.yaml
 *-secret.yaml
 *-secrets.yaml
 
+# Simulator test files
+simulator/test-files/
+
 # Archived/backup files
 *.backup
 *.bak

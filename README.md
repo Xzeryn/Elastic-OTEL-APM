@@ -216,6 +216,13 @@ Elastic-OTEL-APM/
 ├── procurement-demo.yaml          # Kubernetes deployment manifest
 ├── elastic-otel-values-0.12.6.yaml # OTEL Collector Helm values
 │
+├── simulator/                     # Playwright-based APM traffic simulator
+│   ├── simulator.js              # Main simulation script
+│   ├── package.json              # Dependencies (playwright)
+│   ├── Dockerfile                # Containerized simulator
+│   ├── simulator-deployment.yaml # K8s deployment manifest
+│   └── README.md                 # Simulator documentation
+│
 ├── # Configuration Files
 ├── .gitignore                     # Excludes .env and k8s-secrets.yaml
 ├── k8s-secrets-template.yaml      # Template for Elastic credentials (commit)
@@ -368,6 +375,61 @@ kubectl apply -f procurement-demo.yaml
 kubectl get pods -n demo-apps
 kubectl get ingress -n demo-apps
 ```
+
+## Traffic Simulator
+
+A Playwright-based simulator is included to generate continuous APM traffic for demos.
+
+### Quick Start
+
+```bash
+cd simulator
+npm install
+npx playwright install chromium
+npm start
+```
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_UPLOADS` | `true` | Enable document upload simulation |
+| `UPLOAD_FREQUENCY` | `5` | Upload every N cycles (reduces upload load) |
+| `ACTION_DELAY` | `2000` | Delay between actions (ms) |
+| `MAX_CYCLES` | `0` | Max cycles (0 = infinite) |
+| `HEADLESS` | `true` | Run browser headless |
+
+### Examples
+
+```bash
+# Disable uploads entirely
+ENABLE_UPLOADS=false npm start
+
+# Upload less frequently (every 10 cycles)
+UPLOAD_FREQUENCY=10 npm start
+
+# Run 5 cycles then stop
+MAX_CYCLES=5 npm start
+
+# Watch the browser (debugging)
+HEADLESS=false npm start
+```
+
+### Kubernetes Deployment
+
+```bash
+# Deploy simulator to cluster
+kubectl apply -f simulator/simulator-deployment.yaml -n demo-apps
+
+# View logs
+kubectl logs -f deployment/procurement-simulator -n demo-apps
+
+# Stop/start
+kubectl scale deployment/procurement-simulator --replicas=0 -n demo-apps
+kubectl scale deployment/procurement-simulator --replicas=1 -n demo-apps
+```
+
+See `simulator/README.md` for full documentation.
 
 ## How It Works
 
