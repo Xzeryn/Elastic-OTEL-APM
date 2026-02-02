@@ -324,12 +324,26 @@ kubectl create secret generic elastic-secret-otel \
   -n opentelemetry-operator-system
 ```
 
-### 3. Deploy OTEL Collector
+### 3. Deploy OTEL Collector (MUST be done before application deployment)
+
+> **⚠️ IMPORTANT: Deployment Order Matters**
+> 
+> The OpenTelemetry Operator must be fully running before deploying your application pods.
+> The operator's webhook injects auto-instrumentation init containers when pods are created.
+> If pods are created before the webhook is ready, they won't be instrumented.
 
 ```bash
+# Deploy the OTEL stack
 helm upgrade --install opentelemetry-kube-stack open-telemetry/opentelemetry-kube-stack \
   --namespace opentelemetry-operator-system --create-namespace \
   -f elastic-otel-values-0.12.6.yaml
+
+# Wait for the operator to be ready (REQUIRED before deploying apps)
+kubectl wait --for=condition=available deployment/opentelemetry-kube-stack-opentelemetry-operator \
+  -n opentelemetry-operator-system --timeout=120s
+
+# Verify the Instrumentation CR exists
+kubectl get instrumentation -n opentelemetry-operator-system
 ```
 
 ### 4. Build and Push Docker Images
@@ -369,10 +383,30 @@ Edit `procurement-demo.yaml` to update:
 kubectl apply -f procurement-demo.yaml
 ```
 
-### 7. Verify Deployment
+### 7. Verify Auto-Instrumentation
+
+After deploying, verify that the OTEL init containers were injected:
 
 ```bash
+# Check pods are running
 kubectl get pods -n demo-apps
+
+# Verify init containers were injected (should show opentelemetry-auto-instrumentation-*)
+kubectl get pod -n demo-apps -l app=procurement-api -o jsonpath='{.items[0].spec.initContainers[*].name}'
+kubectl get pod -n demo-apps -l app=document-service -o jsonpath='{.items[0].spec.initContainers[*].name}'
+kubectl get pod -n demo-apps -l app=payment-service -o jsonpath='{.items[0].spec.initContainers[*].name}'
+```
+
+**If init containers are missing**, restart the deployments to trigger injection:
+
+```bash
+kubectl rollout restart deployment/procurement-api deployment/document-service deployment/payment-service -n demo-apps
+kubectl rollout status deployment/procurement-api deployment/document-service deployment/payment-service -n demo-apps
+```
+
+### 8. Verify Ingress
+
+```bash
 kubectl get ingress -n demo-apps
 ```
 
