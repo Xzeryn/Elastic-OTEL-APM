@@ -17,12 +17,17 @@ A Playwright-based simulator that generates real user traffic to the Procurement
 
 ## Data Management
 
-All simulator-created records are prefixed with `SIM-` for easy identification:
-- Invoices: `SIM-INV-2026-xxxxx`
-- Documents: `SIM-test-document-xxxxx`
-- Payments: `SIM-PAY-xxxxx`
+Simulator records are tracked via **SIM- prefixed vendors** for accurate cleanup:
+- **Vendors**: Created with `SIM-` prefix (e.g., `SIM-Acme Corporation`)
+- **Invoices**: Created using SIM- vendors, enabling vendor-based cleanup tracking
+- **Payments**: Linked to SIM- vendor invoices via foreign keys
+- **Documents**: Filenames prefixed with `SIM-` (e.g., `SIM-test-document-xxxxx.txt`)
 
-Records are automatically cleaned up based on `CLEANUP_AGE_HOURS` (default: 24 hours).
+Invoice/Payment numbers use chronological format: `INV-YYYYMMDDHHmmssSSS-XXX`
+
+Records are automatically cleaned up with separate intervals:
+- Invoices/Payments: Default 60 minutes (`CLEANUP_AGE_INVOICES_MINUTES`)
+- Documents: Default 30 minutes (`CLEANUP_AGE_DOCUMENTS_MINUTES`)
 
 ## Quick Start
 
@@ -58,7 +63,8 @@ All configuration is via environment variables:
 | `ENABLE_INVOICES` | `true` | Enable invoice creation |
 | `INVOICE_FREQUENCY` | `3` | Create invoice every N cycles |
 | `CLEANUP_FREQUENCY` | `10` | Cleanup old records every N cycles |
-| `CLEANUP_AGE_HOURS` | `24` | Delete records older than X hours |
+| `CLEANUP_AGE_INVOICES_MINUTES` | `60` | Delete invoices/payments older than X minutes |
+| `CLEANUP_AGE_DOCUMENTS_MINUTES` | `30` | Delete documents older than X minutes |
 | `HEADLESS` | `true` | Run browser in headless mode |
 | `MAX_CYCLES` | `0` | Max cycles to run (0 = infinite) |
 | `VERBOSE` | `false` | Enable verbose logging |
@@ -75,8 +81,8 @@ INVOICE_FREQUENCY=1 npm start
 # Less frequent uploads
 UPLOAD_FREQUENCY=10 npm start
 
-# Faster cleanup (delete records older than 6 hours)
-CLEANUP_AGE_HOURS=6 npm start
+# Faster cleanup (delete invoices older than 30 min, documents older than 15 min)
+CLEANUP_AGE_INVOICES_MINUTES=30 CLEANUP_AGE_DOCUMENTS_MINUTES=15 npm start
 
 # More frequent cleanup
 CLEANUP_FREQUENCY=5 npm start
@@ -88,7 +94,7 @@ HEADLESS=false npm start
 MAX_CYCLES=5 npm start
 
 # Combine options
-ENABLE_INVOICES=true INVOICE_FREQUENCY=2 CLEANUP_AGE_HOURS=12 npm start
+ENABLE_INVOICES=true INVOICE_FREQUENCY=2 CLEANUP_AGE_INVOICES_MINUTES=90 npm start
 ```
 
 ## NPM Scripts
@@ -108,26 +114,27 @@ ENABLE_INVOICES=true INVOICE_FREQUENCY=2 CLEANUP_AGE_HOURS=12 npm start
 ### Build
 
 ```bash
-docker build -t <username>/procurement-simulator:v4 .
+docker build -t <username>/procurement-simulator:v10 .
 ```
 
 ### Run
 
 ```bash
 # Default configuration
-docker run --rm <username>/procurement-simulator:v4
+docker run --rm <username>/procurement-simulator:v10
 
 # Browse only
 docker run --rm \
   -e ENABLE_UPLOADS=false \
   -e ENABLE_INVOICES=false \
-  <username>/procurement-simulator:v4
+  <username>/procurement-simulator:v10
 
 # Custom cleanup settings
 docker run --rm \
-  -e CLEANUP_AGE_HOURS=12 \
+  -e CLEANUP_AGE_INVOICES_MINUTES=90 \
+  -e CLEANUP_AGE_DOCUMENTS_MINUTES=45 \
   -e CLEANUP_FREQUENCY=5 \
-  <username>/procurement-simulator:v4
+  <username>/procurement-simulator:v10
 ```
 
 ## Kubernetes Deployment
@@ -200,7 +207,7 @@ Check that the API supports the cleanup endpoints:
 ```bash
 curl -X POST https://demo.myhousetech.net/api/simulator/cleanup \
   -H "Content-Type: application/json" \
-  -d '{"maxAgeHours": 24}'
+  -d '{"invoicesAgeMinutes": 60, "documentsAgeMinutes": 30}'
 ```
 
 ### Invoice creation failing

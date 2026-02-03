@@ -143,6 +143,42 @@ const formatDate = (dateString) => {
   });
 };
 
+const formatDateTime = (dateString) => {
+  if (!dateString) return 'N/A';
+  return new Date(dateString).toLocaleString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+};
+
+// =============================================================================
+// SORT ICON COMPONENT
+// =============================================================================
+const SortIcon = ({ direction }) => (
+  <span className="sort-icon">
+    {direction === 'asc' ? '▲' : direction === 'desc' ? '▼' : '⇅'}
+  </span>
+);
+
+// =============================================================================
+// SORTABLE TABLE HEADER COMPONENT
+// =============================================================================
+const SortableHeader = ({ label, field, sortField, sortDirection, onSort }) => {
+  const isActive = sortField === field;
+  return (
+    <th 
+      className={`sortable ${isActive ? 'active' : ''}`}
+      onClick={() => onSort(field)}
+    >
+      {label}
+      <SortIcon direction={isActive ? sortDirection : null} />
+    </th>
+  );
+};
+
 const getStatusColor = (status) => {
   const colors = {
     draft: '#6c757d',
@@ -690,6 +726,19 @@ const Invoices = () => {
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
+  // Sorting state - default sort by invoice_number
+  const [sortField, setSortField] = useState('invoice_number');
+  const [sortDirection, setSortDirection] = useState('desc');
+
+  const handleSort = (field) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+    setCurrentPage(1); // Reset to first page when sorting
+  };
 
   const fetchData = useCallback(async () => {
     const apm = getApm();
@@ -788,10 +837,37 @@ const Invoices = () => {
     }
   };
 
+  // Sorting function
+  const sortedInvoices = [...invoices].sort((a, b) => {
+    let aVal = a[sortField];
+    let bVal = b[sortField];
+    
+    // Handle special cases
+    if (sortField === 'amount') {
+      aVal = parseFloat(aVal) || 0;
+      bVal = parseFloat(bVal) || 0;
+    } else if (sortField === 'created_at') {
+      aVal = new Date(aVal).getTime();
+      bVal = new Date(bVal).getTime();
+    } else if (sortField === 'actions') {
+      // Sort by action priority: draft(1)=Submit, submitted(2)=Approve, approved(3)=Completed
+      const actionPriority = { draft: 1, submitted: 2, approved: 3, pending: 2 };
+      aVal = actionPriority[a.status] || 99;
+      bVal = actionPriority[b.status] || 99;
+    } else if (typeof aVal === 'string') {
+      aVal = aVal.toLowerCase();
+      bVal = (bVal || '').toLowerCase();
+    }
+    
+    if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
+    if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
+    return 0;
+  });
+
   // Pagination calculations
-  const totalPages = Math.ceil(invoices.length / itemsPerPage);
+  const totalPages = Math.ceil(sortedInvoices.length / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
-  const paginatedInvoices = invoices.slice(startIndex, startIndex + itemsPerPage);
+  const paginatedInvoices = sortedInvoices.slice(startIndex, startIndex + itemsPerPage);
   
   // Summary stats
   const totalAmount = invoices.reduce((sum, inv) => sum + parseFloat(inv.amount || 0), 0);
@@ -884,12 +960,12 @@ const Invoices = () => {
           <table className="data-table">
             <thead>
               <tr>
-                <th>Invoice #</th>
-                <th>Vendor</th>
-                <th>Amount</th>
-                <th>Status</th>
-                <th>Created</th>
-                <th>Actions</th>
+                <SortableHeader label="Invoice #" field="invoice_number" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                <SortableHeader label="Vendor" field="vendor_name" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                <SortableHeader label="Amount" field="amount" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                <SortableHeader label="Status" field="status" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                <SortableHeader label="Created" field="created_at" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                <SortableHeader label="Actions" field="actions" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
               </tr>
             </thead>
             <tbody>
@@ -935,7 +1011,7 @@ const Invoices = () => {
           {/* Pagination */}
           <div className="pagination">
             <div className="pagination-info">
-              Showing {startIndex + 1}-{Math.min(startIndex + itemsPerPage, invoices.length)} of {invoices.length} invoices
+              Showing {startIndex + 1}-{Math.min(startIndex + itemsPerPage, sortedInvoices.length)} of {sortedInvoices.length} invoices
             </div>
             <div className="pagination-controls">
               <select 
@@ -995,6 +1071,19 @@ const Payments = () => {
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
+  // Sorting state - default sort by payment_number
+  const [sortField, setSortField] = useState('payment_number');
+  const [sortDirection, setSortDirection] = useState('desc');
+
+  const handleSort = (field) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+    setCurrentPage(1);
+  };
 
   const fetchData = useCallback(async () => {
     const apm = getApm();
@@ -1053,10 +1142,31 @@ const Payments = () => {
     }
   };
 
+  // Sorting function
+  const sortedPayments = [...payments].sort((a, b) => {
+    let aVal = a[sortField];
+    let bVal = b[sortField];
+    
+    if (sortField === 'amount') {
+      aVal = parseFloat(aVal) || 0;
+      bVal = parseFloat(bVal) || 0;
+    } else if (sortField === 'processed_at') {
+      aVal = new Date(aVal).getTime();
+      bVal = new Date(bVal).getTime();
+    } else if (typeof aVal === 'string') {
+      aVal = aVal.toLowerCase();
+      bVal = (bVal || '').toLowerCase();
+    }
+    
+    if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
+    if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
+    return 0;
+  });
+
   // Pagination calculations
-  const totalPages = Math.ceil(payments.length / itemsPerPage);
+  const totalPages = Math.ceil(sortedPayments.length / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
-  const paginatedPayments = payments.slice(startIndex, startIndex + itemsPerPage);
+  const paginatedPayments = sortedPayments.slice(startIndex, startIndex + itemsPerPage);
   
   // Summary stats
   const totalAmount = payments.reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
@@ -1098,7 +1208,10 @@ const Payments = () => {
       {invoices.length > 0 && (
         <div className="data-table-container" style={{ marginBottom: '2rem' }}>
           <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-            <h3 style={{ margin: 0, fontSize: '1rem', color: '#fbbf24' }}><Icons.Clock /> Invoices Awaiting Payment</h3>
+            <h3 style={{ margin: 0, fontSize: '1rem', color: '#fbbf24', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span style={{ width: '18px', height: '18px', display: 'inline-flex' }}><Icons.Clock /></span>
+              Invoices Awaiting Payment
+            </h3>
           </div>
           <table className="data-table">
             <thead>
@@ -1153,12 +1266,12 @@ const Payments = () => {
           <table className="data-table">
             <thead>
               <tr>
-                <th>Payment #</th>
-                <th>Invoice #</th>
-                <th>Amount</th>
-                <th>Status</th>
-                <th>Processed</th>
-                <th>Confirmation</th>
+                <SortableHeader label="Payment #" field="payment_number" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                <SortableHeader label="Invoice #" field="invoice_number" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                <SortableHeader label="Amount" field="amount" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                <SortableHeader label="Status" field="status" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                <SortableHeader label="Processed" field="processed_at" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                <SortableHeader label="Confirmation" field="confirmation_number" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
               </tr>
             </thead>
             <tbody>
@@ -1176,10 +1289,10 @@ const Payments = () => {
           </table>
           
           {/* Pagination */}
-          {payments.length > itemsPerPage && (
+          {sortedPayments.length > itemsPerPage && (
             <div className="pagination">
               <div className="pagination-info">
-                Showing {startIndex + 1}-{Math.min(startIndex + itemsPerPage, payments.length)} of {payments.length} payments
+                Showing {startIndex + 1}-{Math.min(startIndex + itemsPerPage, sortedPayments.length)} of {sortedPayments.length} payments
               </div>
               <div className="pagination-controls">
                 <select 
@@ -1231,6 +1344,19 @@ const Documents = () => {
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
+  // Sorting state - default sort by uploaded_at (newest first)
+  const [sortField, setSortField] = useState('uploaded_at');
+  const [sortDirection, setSortDirection] = useState('desc');
+
+  const handleSort = (field) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+    setCurrentPage(1);
+  };
 
   const fetchData = useCallback(async () => {
     const apm = getApm();
@@ -1445,10 +1571,34 @@ const Documents = () => {
 
       {/* Documents List */}
       {(() => {
+        // Sorting function
+        const sortedDocs = [...documents].sort((a, b) => {
+          let aVal = a[sortField];
+          let bVal = b[sortField];
+          
+          if (sortField === 'file_size') {
+            aVal = parseInt(aVal) || 0;
+            bVal = parseInt(bVal) || 0;
+          } else if (sortField === 'uploaded_at') {
+            aVal = new Date(aVal).getTime();
+            bVal = new Date(bVal).getTime();
+          } else if (sortField === 'original_filename') {
+            aVal = (a.original_filename || a.filename || '').toLowerCase();
+            bVal = (b.original_filename || b.filename || '').toLowerCase();
+          } else if (typeof aVal === 'string') {
+            aVal = (aVal || '').toLowerCase();
+            bVal = (bVal || '').toLowerCase();
+          }
+          
+          if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
+          if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
+          return 0;
+        });
+
         // Pagination calculations
-        const totalPages = Math.ceil(documents.length / itemsPerPage);
+        const totalPages = Math.ceil(sortedDocs.length / itemsPerPage);
         const startIndex = (currentPage - 1) * itemsPerPage;
-        const paginatedDocs = documents.slice(startIndex, startIndex + itemsPerPage);
+        const paginatedDocs = sortedDocs.slice(startIndex, startIndex + itemsPerPage);
         
         if (loading) {
           return (
@@ -1475,12 +1625,12 @@ const Documents = () => {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Filename</th>
-                  <th>Invoice</th>
-                  <th>Size</th>
-                  <th>Type</th>
-                  <th>Status</th>
-                  <th>Uploaded</th>
+                  <SortableHeader label="Filename" field="original_filename" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                  <SortableHeader label="Invoice" field="invoice_number" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                  <SortableHeader label="Size" field="file_size" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                  <SortableHeader label="Type" field="document_type" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                  <SortableHeader label="Status" field="status" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
+                  <SortableHeader label="Uploaded" field="uploaded_at" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} />
                 </tr>
               </thead>
               <tbody>
@@ -1496,17 +1646,17 @@ const Documents = () => {
                     <td>{formatFileSize(doc.file_size)}</td>
                     <td style={{ textTransform: 'capitalize' }}>{doc.document_type}</td>
                     <td><span className={`status-pill ${doc.status}`}>{doc.status}</span></td>
-                    <td className="date">{formatDate(doc.uploaded_at)}</td>
+                    <td className="date">{formatDateTime(doc.uploaded_at)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
             
             {/* Pagination */}
-            {documents.length > itemsPerPage && (
+            {sortedDocs.length > itemsPerPage && (
               <div className="pagination">
                 <div className="pagination-info">
-                  Showing {startIndex + 1}-{Math.min(startIndex + itemsPerPage, documents.length)} of {documents.length} documents
+                  Showing {startIndex + 1}-{Math.min(startIndex + itemsPerPage, sortedDocs.length)} of {sortedDocs.length} documents
                 </div>
                 <div className="pagination-controls">
                   <select 

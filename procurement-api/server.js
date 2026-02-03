@@ -299,7 +299,19 @@ app.get('/api/invoices/:id', async (req, res) => {
 app.post('/api/invoices', async (req, res) => {
   console.log('Creating invoice...');
   const { vendor_id, amount, description, due_date } = req.body;
-  const invoiceNumber = `INV-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}`;
+  
+  // Generate chronological invoice number: INV-YYYYMMDDHHmmssSSS-XXX
+  // Format ensures proper sorting by creation time with 3-char random suffix for collision protection
+  const now = new Date();
+  const timestamp = now.getFullYear().toString() +
+    String(now.getMonth() + 1).padStart(2, '0') +
+    String(now.getDate()).padStart(2, '0') +
+    String(now.getHours()).padStart(2, '0') +
+    String(now.getMinutes()).padStart(2, '0') +
+    String(now.getSeconds()).padStart(2, '0') +
+    String(now.getMilliseconds()).padStart(3, '0');
+  const randomSuffix = Math.random().toString(36).substring(2, 5).toUpperCase();
+  const invoiceNumber = `INV-${timestamp}-${randomSuffix}`;
   
   try {
     const result = await pool.query(

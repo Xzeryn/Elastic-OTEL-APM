@@ -1285,10 +1285,31 @@ select option {
 .data-table th.sortable {
   cursor: pointer;
   user-select: none;
+  position: relative;
+  padding-right: 1.75rem;
 }
 
 .data-table th.sortable:hover {
   color: #fff;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.data-table th.sortable .sort-icon {
+  position: absolute;
+  right: 0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0.4;
+  font-size: 0.7rem;
+}
+
+.data-table th.sortable.active .sort-icon {
+  opacity: 1;
+  color: #667eea;
+}
+
+.data-table th.sortable:hover .sort-icon {
+  opacity: 0.7;
 }
 
 .data-table tbody tr {

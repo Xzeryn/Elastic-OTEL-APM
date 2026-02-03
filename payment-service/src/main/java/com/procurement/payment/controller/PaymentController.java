@@ -168,10 +168,11 @@ public class PaymentController {
         long startTime = System.currentTimeMillis();
         simulateProcessingTime(500, 1500);
         
-        // Generate payment reference
-        String paymentNumber = "PAY-" + 
-            LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd")) + 
-            "-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        // Generate chronological payment number: PAY-YYYYMMDDHHmmssSSS-XXX
+        // Format ensures proper sorting by creation time with 3-char random suffix for collision protection
+        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS"));
+        String randomSuffix = UUID.randomUUID().toString().substring(0, 3).toUpperCase();
+        String paymentNumber = "PAY-" + timestamp + "-" + randomSuffix;
         
         String confirmationNumber = "CONF-" + 
             UUID.randomUUID().toString().substring(0, 12).toUpperCase();
