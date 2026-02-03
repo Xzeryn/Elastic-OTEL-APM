@@ -591,17 +591,40 @@ async function viewDocuments(page) {
 }
 
 /**
- * Simulate uploading a document
+ * Simulate uploading a document attached to a SIM- invoice
+ * Fetches SIM- invoices and selects one from the dropdown before uploading.
  */
-async function uploadDocument(page) {
+async function uploadDocument(page, simVendors) {
   await navigateTo(page, '/documents', 'Documents');
   
   log.action('Starting document upload simulation');
   
   try {
+    // First, fetch SIM- invoices to attach the document to
+    const simInvoices = await page.evaluate(async ({ apiUrl, vendorIds }) => {
+      const res = await fetch(`${apiUrl}/api/invoices`);
+      const data = await res.json();
+      // Filter to only SIM- vendor invoices
+      return (data.invoices || []).filter(inv => vendorIds.includes(inv.vendor_id));
+    }, { apiUrl: config.apiUrl, vendorIds: simVendors.map(v => v.id) });
+    
     // Create a test file
     const testFilePath = createTestFile();
     log.verbose(`Created test file: ${testFilePath}`);
+    
+    // Select a SIM- invoice from the dropdown if available
+    if (simInvoices.length > 0) {
+      const targetInvoice = randomElement(simInvoices);
+      const invoiceSelect = page.locator('select[data-transaction-name="Select Document Invoice"]');
+      
+      if (await invoiceSelect.isVisible({ timeout: 2000 })) {
+        await invoiceSelect.selectOption({ value: String(targetInvoice.id) });
+        log.verbose(`Selected invoice: ${targetInvoice.invoice_number} (ID: ${targetInvoice.id})`);
+        await delay(randomDelay(500));
+      }
+    } else {
+      log.verbose('No SIM- invoices available - uploading as general document');
+    }
     
     // Find the file input
     const fileInput = page.locator('input[type="file"]');
@@ -615,7 +638,8 @@ async function uploadDocument(page) {
       const uploadButton = page.locator('[data-transaction-name="Upload Document"]');
       if (await uploadButton.isVisible({ timeout: 2000 })) {
         await uploadButton.click();
-        log.action('Clicked Upload Document button');
+        const invoiceInfo = simInvoices.length > 0 ? ` (attached to SIM- invoice)` : ' (general document)';
+        log.action(`Clicked Upload Document button${invoiceInfo}`);
         await delay(randomDelay(config.actionDelay * 2));
       }
     } else {
@@ -813,11 +837,11 @@ async function runSimulation() {
         }
       }
       
-      // Upload document based on frequency
+      // Upload document based on frequency (attaches to SIM- invoices)
       if (config.enableUploads && cycleCount % config.uploadFrequency === 0) {
         log.info(`Upload cycle (every ${config.uploadFrequency} cycles)`);
         try {
-          await uploadDocument(page);
+          await uploadDocument(page, simVendors);
         } catch (e) {
           log.error(`Upload failed: ${e.message}`);
         }

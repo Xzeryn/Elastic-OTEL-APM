@@ -677,13 +677,19 @@ const Vendors = () => {
 // =============================================================================
 // INVOICES COMPONENT
 // =============================================================================
+const ITEMS_PER_PAGE_OPTIONS = [10, 25, 50];
+
 const Invoices = () => {
   const [invoices, setInvoices] = useState([]);
   const [vendors, setVendors] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [submitting, setSubmitting] = useState(null);
+  const [approving, setApproving] = useState(null);
   const [formData, setFormData] = useState({ vendor_id: '', amount: '', description: '' });
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(10);
 
   const fetchData = useCallback(async () => {
     const apm = getApm();
@@ -766,6 +772,34 @@ const Invoices = () => {
     }
   };
 
+  const handleApprove = async (invoiceId) => {
+    const apm = getApm();
+    try {
+      setApproving(invoiceId);
+      await fetch(`${API_BASE}/invoices/${invoiceId}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      fetchData();
+    } catch (err) {
+      if (apm) apm.captureError(err);
+    } finally {
+      setApproving(null);
+    }
+  };
+
+  // Pagination calculations
+  const totalPages = Math.ceil(invoices.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const paginatedInvoices = invoices.slice(startIndex, startIndex + itemsPerPage);
+  
+  // Summary stats
+  const totalAmount = invoices.reduce((sum, inv) => sum + parseFloat(inv.amount || 0), 0);
+  const statusCounts = invoices.reduce((acc, inv) => {
+    acc[inv.status] = (acc[inv.status] || 0) + 1;
+    return acc;
+  }, {});
+
   return (
     <div>
       <div className="section-header">
@@ -811,50 +845,139 @@ const Invoices = () => {
         </div>
       )}
 
+      {/* Summary Stats Bar */}
+      {!loading && (
+        <div className="summary-bar">
+          <div className="summary-stat">
+            <span className="stat-label">Total Invoices</span>
+            <span className="stat-value">{invoices.length}</span>
+          </div>
+          <div className="summary-stat">
+            <span className="stat-label">Total Amount</span>
+            <span className="stat-value currency">{formatCurrency(totalAmount)}</span>
+          </div>
+          <div className="summary-stat">
+            <span className="stat-label">Approved</span>
+            <span className="stat-value approved">{statusCounts.approved || 0}</span>
+          </div>
+          <div className="summary-stat">
+            <span className="stat-label">Pending</span>
+            <span className="stat-value pending">{(statusCounts.draft || 0) + (statusCounts.submitted || 0)}</span>
+          </div>
+        </div>
+      )}
+
       {loading ? (
         <div className="loading-inline">
           <div className="spinner-small"></div>
           <span>Loading invoices...</span>
         </div>
+      ) : invoices.length === 0 ? (
+        <div className="data-table-container">
+          <div className="empty-state">
+            <Icons.Invoices />
+            <p>No invoices found. Create your first invoice above.</p>
+          </div>
+        </div>
       ) : (
-        <div className="services-grid">
-          {invoices.map(invoice => (
-            <div key={invoice.id} className="service-card" style={{ borderLeftColor: getStatusColor(invoice.status) }}>
-              <div className="service-header">
-                <div className="service-icon" style={{ background: 'rgba(102, 126, 234, 0.2)', color: '#667eea' }}>
-                  <Icons.Invoices />
-                </div>
-                <div className="service-info">
-                  <h3>{invoice.invoice_number}</h3>
-                  <span className="status-badge" style={{ background: `${getStatusColor(invoice.status)}20`, color: getStatusColor(invoice.status) }}>
-                    {invoice.status}
-                  </span>
-                </div>
-              </div>
-              <div className="service-details">
-                <div className="detail-row">
-                  <span>Vendor:</span> <strong>{invoice.vendor_name}</strong>
-                </div>
-                <div className="detail-row">
-                  <span>Amount:</span> <strong>{formatCurrency(invoice.amount)}</strong>
-                </div>
-                <div className="detail-row">
-                  <span>Created:</span> <strong>{formatDate(invoice.created_at)}</strong>
-                </div>
-                {invoice.status === 'draft' && (
-                  <button
-                    className="refresh-btn"
-                    style={{ marginTop: '0.5rem' }}
-                    onClick={() => handleSubmit(invoice.id)}
-                    disabled={submitting === invoice.id}
-                    data-transaction-name="Submit Invoice for Approval"
-                  >
-                    {submitting === invoice.id ? 'Submitting...' : 'Submit for Approval'}
-                  </button>
-                )}
-              </div>
+        <div className="data-table-container">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Invoice #</th>
+                <th>Vendor</th>
+                <th>Amount</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {paginatedInvoices.map(invoice => (
+                <tr key={invoice.id}>
+                  <td className="mono">{invoice.invoice_number}</td>
+                  <td>{invoice.vendor_name}</td>
+                  <td className="amount">{formatCurrency(invoice.amount)}</td>
+                  <td>
+                    <span className={`status-pill ${invoice.status}`}>{invoice.status}</span>
+                  </td>
+                  <td className="date">{formatDate(invoice.created_at)}</td>
+                  <td>
+                    {invoice.status === 'draft' && (
+                      <button
+                        className="action-btn primary"
+                        onClick={() => handleSubmit(invoice.id)}
+                        disabled={submitting === invoice.id}
+                        data-transaction-name="Submit Invoice"
+                      >
+                        {submitting === invoice.id ? 'Submitting...' : 'Submit'}
+                      </button>
+                    )}
+                    {invoice.status === 'submitted' && (
+                      <button
+                        className="action-btn primary"
+                        onClick={() => handleApprove(invoice.id)}
+                        disabled={approving === invoice.id}
+                        data-transaction-name="Approve Invoice"
+                      >
+                        {approving === invoice.id ? 'Approving...' : 'Approve'}
+                      </button>
+                    )}
+                    {invoice.status === 'approved' && (
+                      <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.85rem' }}>Completed</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          
+          {/* Pagination */}
+          <div className="pagination">
+            <div className="pagination-info">
+              Showing {startIndex + 1}-{Math.min(startIndex + itemsPerPage, invoices.length)} of {invoices.length} invoices
             </div>
-          ))}
+            <div className="pagination-controls">
+              <select 
+                className="page-size-select" 
+                value={itemsPerPage} 
+                onChange={(e) => { setItemsPerPage(Number(e.target.value)); setCurrentPage(1); }}
+              >
+                {ITEMS_PER_PAGE_OPTIONS.map(opt => (
+                  <option key={opt} value={opt}>{opt} per page</option>
+                ))}
+              </select>
+              <button 
+                className="pagination-btn" 
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+              >
+                Previous
+              </button>
+              {totalPages <= 5 ? (
+                [...Array(totalPages)].map((_, i) => (
+                  <button
+                    key={i + 1}
+                    className={`pagination-btn ${currentPage === i + 1 ? 'active' : ''}`}
+                    onClick={() => setCurrentPage(i + 1)}
+                  >
+                    {i + 1}
+                  </button>
+                ))
+              ) : (
+                <span style={{ color: 'rgba(255,255,255,0.6)', padding: '0 0.5rem' }}>
+                  Page {currentPage} of {totalPages}
+                </span>
+              )}
+              <button 
+                className="pagination-btn" 
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+              >
+                Next
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -869,6 +992,9 @@ const Payments = () => {
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(null);
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(10);
 
   const fetchData = useCallback(async () => {
     const apm = getApm();
@@ -927,6 +1053,15 @@ const Payments = () => {
     }
   };
 
+  // Pagination calculations
+  const totalPages = Math.ceil(payments.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const paginatedPayments = payments.slice(startIndex, startIndex + itemsPerPage);
+  
+  // Summary stats
+  const totalAmount = payments.reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
+  const pendingAmount = invoices.reduce((sum, i) => sum + parseFloat(i.amount || 0), 0);
+
   return (
     <div>
       <div className="section-header">
@@ -937,68 +1072,145 @@ const Payments = () => {
         </button>
       </div>
 
-      {invoices.length > 0 && (
-        <div className="dashboard-stats" style={{ marginBottom: '2rem' }}>
-          <h3><Icons.Clock /> Pending Payments</h3>
-          <div className="stats-grid">
-            {invoices.map(invoice => (
-              <div key={invoice.id} className="stat-card">
-                <div className="stat-info" style={{ flex: 1 }}>
-                  <span className="stat-label">{invoice.invoice_number}</span>
-                  <span className="stat-value">{formatCurrency(invoice.amount)}</span>
-                </div>
-                <button
-                  className="refresh-btn"
-                  onClick={() => processPayment(invoice.id)}
-                  disabled={processing === invoice.id}
-                  data-transaction-name="Process Payment"
-                >
-                  {processing === invoice.id ? 'Processing...' : 'Pay'}
-                </button>
-              </div>
-            ))}
+      {/* Summary Stats Bar */}
+      {!loading && (
+        <div className="summary-bar">
+          <div className="summary-stat">
+            <span className="stat-label">Total Payments</span>
+            <span className="stat-value">{payments.length}</span>
+          </div>
+          <div className="summary-stat">
+            <span className="stat-label">Total Processed</span>
+            <span className="stat-value currency">{formatCurrency(totalAmount)}</span>
+          </div>
+          <div className="summary-stat">
+            <span className="stat-label">Pending</span>
+            <span className="stat-value pending">{invoices.length}</span>
+          </div>
+          <div className="summary-stat">
+            <span className="stat-label">Pending Amount</span>
+            <span className="stat-value pending">{formatCurrency(pendingAmount)}</span>
           </div>
         </div>
       )}
 
+      {/* Pending Payments to Process */}
+      {invoices.length > 0 && (
+        <div className="data-table-container" style={{ marginBottom: '2rem' }}>
+          <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+            <h3 style={{ margin: 0, fontSize: '1rem', color: '#fbbf24' }}><Icons.Clock /> Invoices Awaiting Payment</h3>
+          </div>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Invoice #</th>
+                <th>Amount</th>
+                <th>Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {invoices.map(invoice => (
+                <tr key={invoice.id}>
+                  <td className="mono">{invoice.invoice_number}</td>
+                  <td className="amount">{formatCurrency(invoice.amount)}</td>
+                  <td><span className="status-pill submitted">{invoice.status}</span></td>
+                  <td>
+                    <button
+                      className="action-btn primary"
+                      onClick={() => processPayment(invoice.id)}
+                      disabled={processing === invoice.id}
+                      data-transaction-name="Process Payment"
+                    >
+                      {processing === invoice.id ? 'Processing...' : 'Process Payment'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Payment History */}
       {loading ? (
         <div className="loading-inline">
           <div className="spinner-small"></div>
           <span>Loading payments...</span>
         </div>
+      ) : payments.length === 0 ? (
+        <div className="data-table-container">
+          <div className="empty-state">
+            <Icons.Dollar />
+            <p>No payments processed yet.</p>
+          </div>
+        </div>
       ) : (
-        <div className="services-grid">
-          {payments.map(payment => (
-            <div key={payment.id} className="service-card" style={{ borderLeftColor: getStatusColor(payment.status) }}>
-              <div className="service-header">
-                <div className="service-icon" style={{ background: 'rgba(40, 167, 69, 0.2)', color: '#28a745' }}>
-                  <Icons.Dollar />
-                </div>
-                <div className="service-info">
-                  <h3>{payment.payment_number}</h3>
-                  <span className="status-badge" style={{ background: `${getStatusColor(payment.status)}20`, color: getStatusColor(payment.status) }}>
-                    {payment.status}
-                  </span>
-                </div>
+        <div className="data-table-container">
+          <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+            <h3 style={{ margin: 0, fontSize: '1rem', color: '#4ade80' }}>Payment History</h3>
+          </div>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Payment #</th>
+                <th>Invoice #</th>
+                <th>Amount</th>
+                <th>Status</th>
+                <th>Processed</th>
+                <th>Confirmation</th>
+              </tr>
+            </thead>
+            <tbody>
+              {paginatedPayments.map(payment => (
+                <tr key={payment.id}>
+                  <td className="mono">{payment.payment_number}</td>
+                  <td className="mono">{payment.invoice_number}</td>
+                  <td className="amount">{formatCurrency(payment.amount)}</td>
+                  <td><span className={`status-pill ${payment.status}`}>{payment.status}</span></td>
+                  <td className="date">{formatDate(payment.processed_at)}</td>
+                  <td className="mono" style={{ fontSize: '0.8rem' }}>{payment.confirmation_number || '-'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          
+          {/* Pagination */}
+          {payments.length > itemsPerPage && (
+            <div className="pagination">
+              <div className="pagination-info">
+                Showing {startIndex + 1}-{Math.min(startIndex + itemsPerPage, payments.length)} of {payments.length} payments
               </div>
-              <div className="service-details">
-                <div className="detail-row">
-                  <span>Invoice:</span> <strong>{payment.invoice_number}</strong>
-                </div>
-                <div className="detail-row">
-                  <span>Amount:</span> <strong>{formatCurrency(payment.amount)}</strong>
-                </div>
-                <div className="detail-row">
-                  <span>Processed:</span> <strong>{formatDate(payment.processed_at)}</strong>
-                </div>
-                {payment.confirmation_number && (
-                  <div className="detail-row">
-                    <span>Confirmation:</span> <code>{payment.confirmation_number}</code>
-                  </div>
-                )}
+              <div className="pagination-controls">
+                <select 
+                  className="page-size-select" 
+                  value={itemsPerPage} 
+                  onChange={(e) => { setItemsPerPage(Number(e.target.value)); setCurrentPage(1); }}
+                >
+                  {ITEMS_PER_PAGE_OPTIONS.map(opt => (
+                    <option key={opt} value={opt}>{opt} per page</option>
+                  ))}
+                </select>
+                <button 
+                  className="pagination-btn" 
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                >
+                  Previous
+                </button>
+                <span style={{ color: 'rgba(255,255,255,0.6)', padding: '0 0.5rem' }}>
+                  Page {currentPage} of {totalPages}
+                </span>
+                <button 
+                  className="pagination-btn" 
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                >
+                  Next
+                </button>
               </div>
             </div>
-          ))}
+          )}
         </div>
       )}
     </div>
@@ -1016,6 +1228,9 @@ const Documents = () => {
   const [selectedFile, setSelectedFile] = useState(null);
   const [selectedInvoice, setSelectedInvoice] = useState('');
   const [uploadStatus, setUploadStatus] = useState(null);
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(10);
 
   const fetchData = useCallback(async () => {
     const apm = getApm();
@@ -1206,45 +1421,126 @@ const Documents = () => {
         </div>
       </div>
 
-      {/* Documents List */}
-      {loading ? (
-        <div className="loading-inline">
-          <div className="spinner-small"></div>
-          <span>Loading documents...</span>
-        </div>
-      ) : (
-        <div className="services-grid">
-          {documents.map(doc => (
-            <div key={doc.id} className="service-card" style={{ borderLeftColor: getStatusColor(doc.status) }}>
-              <div className="service-header">
-                <div className="service-icon" style={{ background: 'rgba(102, 126, 234, 0.2)', color: '#667eea' }}>
-                  <Icons.Documents />
-                </div>
-                <div className="service-info">
-                  <h3>{doc.original_filename || doc.filename}</h3>
-                  <span className="status-badge" style={{ background: `${getStatusColor(doc.status)}20`, color: getStatusColor(doc.status) }}>
-                    {doc.status}
-                  </span>
-                </div>
-              </div>
-              <div className="service-details">
-                <div className="detail-row">
-                  <span>Invoice:</span> <strong>{doc.invoice_number || 'N/A'}</strong>
-                </div>
-                <div className="detail-row">
-                  <span>Size:</span> <strong>{formatFileSize(doc.file_size)}</strong>
-                </div>
-                <div className="detail-row">
-                  <span>Type:</span> <strong>{doc.document_type}</strong>
-                </div>
-                <div className="detail-row">
-                  <span>Uploaded:</span> <strong>{formatDate(doc.uploaded_at)}</strong>
-                </div>
-              </div>
-            </div>
-          ))}
+      {/* Summary Stats Bar */}
+      {!loading && (
+        <div className="summary-bar">
+          <div className="summary-stat">
+            <span className="stat-label">Total Documents</span>
+            <span className="stat-value">{documents.length}</span>
+          </div>
+          <div className="summary-stat">
+            <span className="stat-label">Total Size</span>
+            <span className="stat-value">{formatFileSize(documents.reduce((sum, d) => sum + (d.file_size || 0), 0))}</span>
+          </div>
+          <div className="summary-stat">
+            <span className="stat-label">Validated</span>
+            <span className="stat-value approved">{documents.filter(d => d.status === 'validated').length}</span>
+          </div>
+          <div className="summary-stat">
+            <span className="stat-label">Pending</span>
+            <span className="stat-value pending">{documents.filter(d => d.status === 'pending' || d.status === 'uploaded').length}</span>
+          </div>
         </div>
       )}
+
+      {/* Documents List */}
+      {(() => {
+        // Pagination calculations
+        const totalPages = Math.ceil(documents.length / itemsPerPage);
+        const startIndex = (currentPage - 1) * itemsPerPage;
+        const paginatedDocs = documents.slice(startIndex, startIndex + itemsPerPage);
+        
+        if (loading) {
+          return (
+            <div className="loading-inline">
+              <div className="spinner-small"></div>
+              <span>Loading documents...</span>
+            </div>
+          );
+        }
+        
+        if (documents.length === 0) {
+          return (
+            <div className="data-table-container">
+              <div className="empty-state">
+                <Icons.Documents />
+                <p>No documents found. Upload your first document above.</p>
+              </div>
+            </div>
+          );
+        }
+        
+        return (
+          <div className="data-table-container">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Filename</th>
+                  <th>Invoice</th>
+                  <th>Size</th>
+                  <th>Type</th>
+                  <th>Status</th>
+                  <th>Uploaded</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paginatedDocs.map(doc => (
+                  <tr key={doc.id}>
+                    <td>
+                      <div className="file-info">
+                        <span className="filename">{doc.original_filename || doc.filename}</span>
+                        <span className="filesize">{doc.mime_type || 'unknown'}</span>
+                      </div>
+                    </td>
+                    <td className="mono">{doc.invoice_number || '-'}</td>
+                    <td>{formatFileSize(doc.file_size)}</td>
+                    <td style={{ textTransform: 'capitalize' }}>{doc.document_type}</td>
+                    <td><span className={`status-pill ${doc.status}`}>{doc.status}</span></td>
+                    <td className="date">{formatDate(doc.uploaded_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            
+            {/* Pagination */}
+            {documents.length > itemsPerPage && (
+              <div className="pagination">
+                <div className="pagination-info">
+                  Showing {startIndex + 1}-{Math.min(startIndex + itemsPerPage, documents.length)} of {documents.length} documents
+                </div>
+                <div className="pagination-controls">
+                  <select 
+                    className="page-size-select" 
+                    value={itemsPerPage} 
+                    onChange={(e) => { setItemsPerPage(Number(e.target.value)); setCurrentPage(1); }}
+                  >
+                    {ITEMS_PER_PAGE_OPTIONS.map(opt => (
+                      <option key={opt} value={opt}>{opt} per page</option>
+                    ))}
+                  </select>
+                  <button 
+                    className="pagination-btn" 
+                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                    disabled={currentPage === 1}
+                  >
+                    Previous
+                  </button>
+                  <span style={{ color: 'rgba(255,255,255,0.6)', padding: '0 0.5rem' }}>
+                    Page {currentPage} of {totalPages}
+                  </span>
+                  <button 
+                    className="pagination-btn" 
+                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                    disabled={currentPage === totalPages}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 };
