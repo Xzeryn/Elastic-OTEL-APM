@@ -73,19 +73,20 @@ def schedule_file_deletion(file_path, doc_id, delay_seconds):
                 os.remove(file_path)
                 logger.info(f"[Cleanup] Deleted file: {file_path} ({file_size} bytes)")
                 
-                # Update database status
+                # Update database status - only mark as 'deleted' if still 'uploaded'
+                # Preserve 'validated' status for better UX (shows document served its purpose)
                 try:
                     conn = get_db_connection()
                     with conn.cursor() as cur:
                         cur.execute("""
                             UPDATE documents SET status = 'deleted', validated_at = NOW()
-                            WHERE id = %s
+                            WHERE id = %s AND status = 'uploaded'
                         """, (doc_id,))
                         
                         # Log audit
                         cur.execute("""
                             INSERT INTO audit_logs (entity_type, entity_id, action, details)
-                            VALUES ('document', %s, 'deleted', %s)
+                            VALUES ('document', %s, 'file_deleted', %s)
                         """, (doc_id, f'{{"reason": "scheduled_cleanup", "file_size": {file_size}}}'))
                         conn.commit()
                     conn.close()
