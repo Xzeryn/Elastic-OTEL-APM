@@ -25,7 +25,8 @@
  *   ENABLE_INVOICES    - Enable invoice creation (default: true)
  *   INVOICE_FREQUENCY  - Create invoice every N cycles (default: 3)
  *   CLEANUP_FREQUENCY  - Cleanup old records every N cycles (default: 10)
- *   CLEANUP_AGE_HOURS  - Delete simulator records older than X hours (default: 24)
+ *   CLEANUP_AGE_INVOICES_MINUTES - Delete invoices/payments older than X min (default: 60)
+ *   CLEANUP_AGE_DOCUMENTS_MINUTES - Delete documents older than X min (default: 30)
  *   HEADLESS           - Run browser headless (default: true)
  *   MAX_CYCLES         - Maximum cycles to run, 0 = infinite (default: 0)
  *   VERBOSE            - Enable verbose logging (default: false)
@@ -59,7 +60,9 @@ const config = {
   enableInvoices: process.env.ENABLE_INVOICES !== 'false',
   invoiceFrequency: parseInt(process.env.INVOICE_FREQUENCY || '3', 10),
   cleanupFrequency: parseInt(process.env.CLEANUP_FREQUENCY || '10', 10),
-  cleanupAgeHours: parseInt(process.env.CLEANUP_AGE_HOURS || '24', 10),
+  // Separate cleanup intervals for different entity types (in minutes)
+  cleanupAgeInvoicesMinutes: parseInt(process.env.CLEANUP_AGE_INVOICES_MINUTES || '60', 10),  // 1 hour default
+  cleanupAgeDocumentsMinutes: parseInt(process.env.CLEANUP_AGE_DOCUMENTS_MINUTES || '30', 10), // 30 min default
   headless: process.env.HEADLESS !== 'false',
   maxCycles: parseInt(process.env.MAX_CYCLES || '0', 10),
   verbose: process.env.VERBOSE === 'true'
@@ -93,6 +96,21 @@ const randomDelay = (baseMs, variance = 0.3) => {
 const randomElement = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
 const randomAmount = () => Math.floor(Math.random() * 50000) + 1000; // $1,000 - $51,000
+
+// =============================================================================
+// SIM- VENDOR DEFINITIONS
+// =============================================================================
+// All simulator-created data is linked to these vendors for clean tracking/cleanup.
+// The cleanup process deletes based on vendor relationship:
+//   SIM- Vendor → Invoices → Payments (cascade)
+
+const SIM_VENDORS = [
+  { name: 'SIM-Acme Corporation', email: 'sim.acme@example.com', phone: '555-0101', address: '123 Simulator St, Test City, TS 00001' },
+  { name: 'SIM-Tech Solutions', email: 'sim.tech@example.com', phone: '555-0102', address: '456 Demo Ave, Test City, TS 00002' },
+  { name: 'SIM-Global Supplies', email: 'sim.global@example.com', phone: '555-0103', address: '789 Sample Blvd, Test City, TS 00003' },
+  { name: 'SIM-Office Depot', email: 'sim.office@example.com', phone: '555-0104', address: '321 Fake Rd, Test City, TS 00004' },
+  { name: 'SIM-Cloud Services Inc', email: 'sim.cloud@example.com', phone: '555-0105', address: '654 Virtual Way, Test City, TS 00005' }
+];
 
 const randomDescription = () => {
   const descriptions = [
@@ -218,9 +236,9 @@ const cleanupTestFiles = () => {
 // =============================================================================
 
 /**
- * Fetch vendors from API
+ * Fetch all vendors from API
  */
-async function fetchVendors(page) {
+async function fetchAllVendors(page) {
   try {
     const response = await page.evaluate(async (apiUrl) => {
       const res = await fetch(`${apiUrl}/api/vendors`);
@@ -234,61 +252,157 @@ async function fetchVendors(page) {
 }
 
 /**
- * Create a simulator invoice via the UI
+ * Create a vendor via API
  */
-async function createSimulatorInvoice(page, vendors) {
-  if (vendors.length === 0) {
-    log.verbose('No vendors available for invoice creation');
+async function createVendor(page, vendorData) {
+  try {
+    const response = await page.evaluate(async ({ apiUrl, vendor }) => {
+      const res = await fetch(`${apiUrl}/api/vendors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(vendor)
+      });
+      return res.json();
+    }, { apiUrl: config.apiUrl, vendor: vendorData });
+    return response;
+  } catch (e) {
+    log.error(`Failed to create vendor: ${e.message}`);
+    return null;
+  }
+}
+
+/**
+ * Ensure all SIM- vendors exist in the database.
+ * Creates them via API if they don't exist (generates proper traces).
+ * Returns the list of SIM- vendor objects with IDs.
+ */
+async function ensureSimVendorsExist(page) {
+  log.info('Ensuring SIM- vendors exist...');
+  
+  // Fetch all existing vendors
+  const existingVendors = await fetchAllVendors(page);
+  const existingSimVendors = existingVendors.filter(v => v.name.startsWith('SIM-'));
+  
+  log.verbose(`Found ${existingSimVendors.length} existing SIM- vendors`);
+  
+  // Check which SIM vendors need to be created
+  const existingNames = new Set(existingSimVendors.map(v => v.name));
+  const vendorsToCreate = SIM_VENDORS.filter(v => !existingNames.has(v.name));
+  
+  if (vendorsToCreate.length > 0) {
+    log.info(`Creating ${vendorsToCreate.length} missing SIM- vendors...`);
+    
+    for (const vendorData of vendorsToCreate) {
+      log.data(`Creating vendor: ${vendorData.name}`);
+      const created = await createVendor(page, vendorData);
+      if (created && created.id) {
+        existingSimVendors.push(created);
+        log.data(`Created vendor: ${vendorData.name} (ID: ${created.id})`);
+      }
+      // Small delay between creations to spread out the traces
+      await delay(randomDelay(500));
+    }
+  }
+  
+  log.info(`SIM- vendors ready: ${existingSimVendors.length} total`);
+  return existingSimVendors;
+}
+
+/**
+ * Fetch only SIM- vendors from API (for invoice creation)
+ */
+async function fetchSimVendors(page) {
+  const allVendors = await fetchAllVendors(page);
+  return allVendors.filter(v => v.name.startsWith('SIM-'));
+}
+
+/**
+ * Create a simulator invoice via the UI
+ * Only uses SIM- prefixed vendors to enable vendor-based cleanup tracking.
+ */
+async function createSimulatorInvoice(page, simVendors) {
+  if (simVendors.length === 0) {
+    log.verbose('No SIM- vendors available for invoice creation');
     return null;
   }
   
-  log.data('Creating simulator invoice...');
+  log.data('Creating simulator invoice (using SIM- vendor)...');
   
   try {
     // Navigate to invoices page
     await page.goto(`${config.baseUrl}/invoices`, { waitUntil: 'networkidle' });
     await delay(randomDelay(1000));
     
-    // Look for "New Invoice" or "Create Invoice" button
-    const createButton = page.locator('button:has-text("New Invoice"), button:has-text("Create"), button:has-text("Add Invoice")').first();
+    // Look for "+ Create Invoice" button (opens the form)
+    const createButton = page.locator('button:has-text("Create Invoice")').first();
     
     if (await createButton.isVisible({ timeout: 3000 })) {
       await createButton.click();
+      log.verbose('Clicked Create Invoice button to open form');
       await delay(randomDelay(1000));
       
-      // Fill out the form
-      const vendor = randomElement(vendors);
+      // Fill out the form - select a random SIM- vendor
+      const vendor = randomElement(simVendors);
       const amount = randomAmount();
       const description = `SIM-${randomDescription()}`;
       
-      // Try to fill vendor dropdown/select
-      const vendorSelect = page.locator('select[name="vendor"], select[name="vendor_id"], #vendor, #vendor_id').first();
+      // Select vendor from dropdown (uses data-transaction-name attribute)
+      const vendorSelect = page.locator('select[data-transaction-name="Select Invoice Vendor"]');
       if (await vendorSelect.isVisible({ timeout: 2000 })) {
         await vendorSelect.selectOption({ value: String(vendor.id) });
+        log.verbose(`Selected vendor: ${vendor.name} (ID: ${vendor.id})`);
+      } else {
+        // Fallback: try any select element in the form
+        const anySelect = page.locator('form select').first();
+        if (await anySelect.isVisible({ timeout: 1000 })) {
+          await anySelect.selectOption({ value: String(vendor.id) });
+          log.verbose(`Selected vendor via fallback: ${vendor.name}`);
+        } else {
+          log.error('Could not find vendor select dropdown');
+          return null;
+        }
       }
       
-      // Fill amount
-      const amountInput = page.locator('input[name="amount"], #amount').first();
+      // Fill amount (input with placeholder "Amount")
+      const amountInput = page.locator('input[placeholder="Amount"]');
       if (await amountInput.isVisible({ timeout: 2000 })) {
         await amountInput.fill(String(amount));
+        log.verbose(`Filled amount: ${amount}`);
+      } else {
+        // Fallback: try number input in the form
+        const numInput = page.locator('form input[type="number"]').first();
+        if (await numInput.isVisible({ timeout: 1000 })) {
+          await numInput.fill(String(amount));
+        }
       }
       
-      // Fill description
-      const descInput = page.locator('input[name="description"], textarea[name="description"], #description').first();
+      // Fill description (input with placeholder "Description")
+      const descInput = page.locator('input[placeholder="Description"]');
       if (await descInput.isVisible({ timeout: 2000 })) {
         await descInput.fill(description);
+        log.verbose(`Filled description: ${description}`);
       }
       
-      // Submit the form
-      const submitButton = page.locator('button[type="submit"], button:has-text("Create"), button:has-text("Save")').first();
+      // Submit the form (button with data-transaction-name="Create Invoice" and type="submit")
+      const submitButton = page.locator('button[type="submit"][data-transaction-name="Create Invoice"]');
       if (await submitButton.isVisible({ timeout: 2000 })) {
         await submitButton.click();
+        log.verbose('Clicked submit button');
         await delay(randomDelay(2000));
-        log.data(`Created invoice: Vendor=${vendor.name}, Amount=$${amount}, Desc=${description}`);
-        return { vendor, amount, description };
+        
+        // Verify form closed (indicates success)
+        const formStillVisible = await page.locator('form.upload-form').isVisible({ timeout: 1000 }).catch(() => false);
+        if (!formStillVisible) {
+          log.data(`Created invoice: Vendor=${vendor.name}, Amount=$${amount}, Desc=${description}`);
+          return { vendor, amount, description };
+        } else {
+          log.verbose('Form still visible after submit - invoice may not have been created');
+        }
+      } else {
+        log.error('Submit button not found');
       }
     } else {
-      log.verbose('Create invoice button not found - UI may not support invoice creation');
+      log.verbose('Create invoice button not found');
     }
     
     return null;
@@ -356,22 +470,28 @@ async function approveInvoice(page) {
 
 /**
  * Cleanup old simulator records via API
+ * Uses separate intervals for invoices/payments vs documents
  */
 async function cleanupSimulatorRecords(page) {
-  log.data(`Cleaning up simulator records older than ${config.cleanupAgeHours} hours...`);
+  log.data(`Cleaning up: invoices/payments > ${config.cleanupAgeInvoicesMinutes}min, documents > ${config.cleanupAgeDocumentsMinutes}min`);
   
   try {
-    const response = await page.evaluate(async ({ apiUrl, maxAgeHours }) => {
+    const response = await page.evaluate(async ({ apiUrl, invoicesAgeMinutes, documentsAgeMinutes }) => {
       const res = await fetch(`${apiUrl}/api/simulator/cleanup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ maxAgeHours })
+        body: JSON.stringify({ invoicesAgeMinutes, documentsAgeMinutes })
       });
       return res.json();
-    }, { apiUrl: config.apiUrl, maxAgeHours: config.cleanupAgeHours });
+    }, { 
+      apiUrl: config.apiUrl, 
+      invoicesAgeMinutes: config.cleanupAgeInvoicesMinutes,
+      documentsAgeMinutes: config.cleanupAgeDocumentsMinutes
+    });
     
     if (response.success) {
-      log.data(`Cleanup complete: ${response.deleted.invoices} invoices, ${response.deleted.payments} payments, ${response.deleted.documents} documents`);
+      const d = response.deleted;
+      log.data(`Cleanup complete: ${d.invoices} invoices, ${d.payments} payments, ${d.documents} documents (via SIM- vendor cascade)`);
     } else {
       log.verbose(`Cleanup response: ${JSON.stringify(response)}`);
     }
@@ -607,7 +727,7 @@ async function runSimulation() {
   log.info(`  Cycle Delay: ${config.cycleDelay}ms`);
   log.info(`  Uploads Enabled: ${config.enableUploads} (every ${config.uploadFrequency} cycles)`);
   log.info(`  Invoice Creation: ${config.enableInvoices} (every ${config.invoiceFrequency} cycles)`);
-  log.info(`  Auto-Cleanup: Every ${config.cleanupFrequency} cycles (records > ${config.cleanupAgeHours}h old)`);
+  log.info(`  Auto-Cleanup: Every ${config.cleanupFrequency} cycles (invoices/payments > ${config.cleanupAgeInvoicesMinutes}min, documents > ${config.cleanupAgeDocumentsMinutes}min)`);
   log.info(`  Headless: ${config.headless}`);
   log.info(`  Max Cycles: ${config.maxCycles === 0 ? 'Infinite' : config.maxCycles}`);
   
@@ -629,7 +749,7 @@ async function runSimulation() {
   });
   
   let cycleCount = 0;
-  let vendors = [];
+  let simVendors = [];
   
   try {
     // Initial page load
@@ -637,9 +757,9 @@ async function runSimulation() {
     await page.goto(config.baseUrl, { waitUntil: 'networkidle' });
     await delay(config.actionDelay);
     
-    // Fetch vendors for invoice creation
-    vendors = await fetchVendors(page);
-    log.info(`Loaded ${vendors.length} vendors for invoice creation`);
+    // Ensure SIM- vendors exist (creates traces via API if needed)
+    simVendors = await ensureSimVendorsExist(page);
+    log.info(`Using ${simVendors.length} SIM- vendors for invoice creation`);
     
     // Initial cleanup
     log.info('Performing initial cleanup...');
@@ -647,8 +767,9 @@ async function runSimulation() {
     
     // Get initial stats
     const stats = await getSimulatorStats(page);
-    if (stats) {
-      log.info(`Current simulator records: ${JSON.stringify(stats.simulator_records)}`);
+    if (stats && stats.simulator_records) {
+      const s = stats.simulator_records;
+      log.info(`Current simulator records: ${s.vendors} vendors, ${s.invoices} invoices, ${s.payments} payments, ${s.documents} documents`);
     }
     
     // Main simulation loop
@@ -679,12 +800,12 @@ async function runSimulation() {
         }
       }
       
-      // Create invoice based on frequency
+      // Create invoice based on frequency (uses SIM- vendors only)
       if (config.enableInvoices && cycleCount % config.invoiceFrequency === 0) {
         log.info(`Invoice creation cycle (every ${config.invoiceFrequency} cycles)`);
         try {
-          await createSimulatorInvoice(page, vendors);
-          // Try to submit and approve
+          await createSimulatorInvoice(page, simVendors);
+          // Try to submit and approve (this triggers payment creation when approved)
           await submitInvoiceForApproval(page);
           await approveInvoice(page);
         } catch (e) {

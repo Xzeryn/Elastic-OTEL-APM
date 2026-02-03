@@ -526,56 +526,107 @@ app.get('/api/payments', async (req, res) => {
 // SIMULATOR CLEANUP ENDPOINTS
 // =============================================================================
 // These endpoints are used by the simulator to clean up old test data.
-// Records created by the simulator are prefixed with "SIM-" for identification.
+// 
+// TRACKING STRATEGY: Vendor-based cascade
+//   - Simulator creates vendors with "SIM-" prefix (e.g., "SIM-Acme Corporation")
+//   - Invoices are created against these SIM- vendors
+//   - Payments are processed for those invoices
+//   - Cleanup cascades: Payments → Invoices → (Vendors kept for reuse)
+//   - Documents tracked separately by filename prefix "SIM-"
+//
+// This approach ensures complete data lineage tracking without modifying
+// the standard invoice_number/payment_number generation logic.
 
 /**
  * Delete old simulator-created records
  * POST /api/simulator/cleanup
- * Body: { maxAgeHours: 24 }
+ * 
+ * Body options:
+ *   - { maxAgeMinutes: 60 }  - Single interval for all entities
+ *   - { maxAgeHours: 1 }     - Single interval in hours
+ *   - { invoicesAgeMinutes: 60, documentsAgeMinutes: 30 }  - Per-entity intervals
+ * 
+ * Cleanup cascade:
+ *   1. Delete payments for invoices linked to SIM- vendors
+ *   2. Delete invoices linked to SIM- vendors
+ *   3. Delete documents with SIM- filename prefix
+ *   4. (Vendors are kept for reuse)
  */
 app.post('/api/simulator/cleanup', async (req, res) => {
-  const maxAgeHours = parseInt(req.body.maxAgeHours) || 24;
-  console.log(`Cleaning up simulator records older than ${maxAgeHours} hours...`);
+  // Support per-entity intervals or a single global interval
+  let invoicesAgeMinutes, documentsAgeMinutes;
+  
+  if (req.body.invoicesAgeMinutes || req.body.documentsAgeMinutes) {
+    // Per-entity intervals specified
+    invoicesAgeMinutes = parseFloat(req.body.invoicesAgeMinutes) || 60;
+    documentsAgeMinutes = parseFloat(req.body.documentsAgeMinutes) || 30;
+  } else if (req.body.maxAgeMinutes) {
+    // Single interval in minutes
+    invoicesAgeMinutes = documentsAgeMinutes = parseFloat(req.body.maxAgeMinutes);
+  } else {
+    // Single interval in hours (default 24 hours)
+    const maxAgeHours = parseFloat(req.body.maxAgeHours) || 24;
+    invoicesAgeMinutes = documentsAgeMinutes = maxAgeHours * 60;
+  }
+  
+  console.log(`Cleaning up simulator records: invoices/payments > ${invoicesAgeMinutes}min, documents > ${documentsAgeMinutes}min`);
   
   try {
     const results = {
       invoices: 0,
       payments: 0,
-      documents: 0
+      documents: 0,
+      vendors: 0
     };
     
-    // Delete old simulator payments first (foreign key constraint)
+    // Step 1: Delete payments for invoices linked to SIM- vendors
+    // Uses subquery to find invoices → vendors relationship
     const paymentsResult = await pool.query(`
       DELETE FROM payments 
-      WHERE payment_number LIKE 'SIM-%' 
-      AND created_at < NOW() - INTERVAL '${maxAgeHours} hours'
+      WHERE invoice_id IN (
+        SELECT i.id FROM invoices i
+        JOIN vendors v ON i.vendor_id = v.id
+        WHERE v.name LIKE 'SIM-%'
+      )
+      AND created_at < NOW() - INTERVAL '${invoicesAgeMinutes} minutes'
       RETURNING id
     `);
     results.payments = paymentsResult.rowCount;
     
-    // Delete old simulator documents
+    // Step 2: Delete invoices linked to SIM- vendors
+    const invoicesResult = await pool.query(`
+      DELETE FROM invoices 
+      WHERE vendor_id IN (SELECT id FROM vendors WHERE name LIKE 'SIM-%')
+      AND created_at < NOW() - INTERVAL '${invoicesAgeMinutes} minutes'
+      RETURNING id
+    `);
+    results.invoices = invoicesResult.rowCount;
+    
+    // Step 3: Delete old simulator documents (tracked by original_filename prefix)
     const documentsResult = await pool.query(`
       DELETE FROM documents 
-      WHERE filename LIKE 'SIM-%' 
-      AND uploaded_at < NOW() - INTERVAL '${maxAgeHours} hours'
+      WHERE original_filename LIKE 'SIM-%' 
+      AND uploaded_at < NOW() - INTERVAL '${documentsAgeMinutes} minutes'
       RETURNING id
     `);
     results.documents = documentsResult.rowCount;
     
-    // Delete old simulator invoices
-    const invoicesResult = await pool.query(`
-      DELETE FROM invoices 
-      WHERE invoice_number LIKE 'SIM-%' 
-      AND created_at < NOW() - INTERVAL '${maxAgeHours} hours'
-      RETURNING id
-    `);
-    results.invoices = invoicesResult.rowCount;
+    // Note: SIM- vendors are kept for reuse (not deleted)
+    // If you want to clean up unused vendors, uncomment below:
+    // const vendorsResult = await pool.query(`
+    //   DELETE FROM vendors 
+    //   WHERE name LIKE 'SIM-%'
+    //   AND created_at < NOW() - INTERVAL '${maxAgeHours} hours'
+    //   AND id NOT IN (SELECT DISTINCT vendor_id FROM invoices WHERE vendor_id IS NOT NULL)
+    //   RETURNING id
+    // `);
+    // results.vendors = vendorsResult.rowCount;
     
     // Invalidate cache
     await redisClient.del('dashboard_metrics');
     
     const totalDeleted = results.invoices + results.payments + results.documents;
-    console.log(`Cleanup complete: ${totalDeleted} records deleted`);
+    console.log(`Cleanup complete: ${totalDeleted} records deleted (${results.payments} payments, ${results.invoices} invoices, ${results.documents} documents)`);
     
     res.json({
       success: true,
@@ -591,17 +642,39 @@ app.post('/api/simulator/cleanup', async (req, res) => {
 /**
  * Get count of simulator records
  * GET /api/simulator/stats
+ * 
+ * Counts based on vendor relationship:
+ *   - Vendors: name LIKE 'SIM-%'
+ *   - Invoices: linked to SIM- vendors
+ *   - Payments: linked to invoices linked to SIM- vendors
+ *   - Documents: filename LIKE 'SIM-%'
  */
 app.get('/api/simulator/stats', async (req, res) => {
   try {
-    const [invoices, payments, documents] = await Promise.all([
-      pool.query(`SELECT COUNT(*) as count FROM invoices WHERE invoice_number LIKE 'SIM-%'`),
-      pool.query(`SELECT COUNT(*) as count FROM payments WHERE payment_number LIKE 'SIM-%'`),
-      pool.query(`SELECT COUNT(*) as count FROM documents WHERE filename LIKE 'SIM-%'`)
+    const [vendors, invoices, payments, documents] = await Promise.all([
+      // Count SIM- vendors
+      pool.query(`SELECT COUNT(*) as count FROM vendors WHERE name LIKE 'SIM-%'`),
+      // Count invoices linked to SIM- vendors
+      pool.query(`
+        SELECT COUNT(*) as count FROM invoices 
+        WHERE vendor_id IN (SELECT id FROM vendors WHERE name LIKE 'SIM-%')
+      `),
+      // Count payments for invoices linked to SIM- vendors
+      pool.query(`
+        SELECT COUNT(*) as count FROM payments 
+        WHERE invoice_id IN (
+          SELECT i.id FROM invoices i
+          JOIN vendors v ON i.vendor_id = v.id
+          WHERE v.name LIKE 'SIM-%'
+        )
+      `),
+      // Count documents with SIM- original_filename prefix
+      pool.query(`SELECT COUNT(*) as count FROM documents WHERE original_filename LIKE 'SIM-%'`)
     ]);
     
     res.json({
       simulator_records: {
+        vendors: parseInt(vendors.rows[0].count),
         invoices: parseInt(invoices.rows[0].count),
         payments: parseInt(payments.rows[0].count),
         documents: parseInt(documents.rows[0].count)
