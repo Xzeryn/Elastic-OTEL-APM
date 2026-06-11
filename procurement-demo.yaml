@@ -159,6 +159,10 @@ data:
     CREATE INDEX IF NOT EXISTS idx_payments_invoice ON payments(invoice_id);
     CREATE INDEX IF NOT EXISTS idx_documents_invoice ON documents(invoice_id);
     CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_logs(entity_type, entity_id);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_invoices_created_at ON invoices(created_at);
+    CREATE INDEX IF NOT EXISTS idx_payments_created_at ON payments(created_at);
+    CREATE INDEX IF NOT EXISTS idx_documents_uploaded_at ON documents(uploaded_at);
     
     -- Insert sample vendors
     INSERT INTO vendors (name, email, phone, status) VALUES
@@ -331,7 +335,7 @@ spec:
     spec:
       containers:
       - name: procurement-api
-        image: skarter/procurement-api:v7
+        image: skarter/procurement-api:v8
         ports:
         - containerPort: 3000
         env:
@@ -359,27 +363,33 @@ spec:
           value: "http://document-service:5000"
         - name: PAYMENT_SERVICE_URL
           value: "http://payment-service:8080"
+        - name: DATA_RETENTION_DAYS
+          value: "15"
         - name: OTEL_RESOURCE_ATTRIBUTES
           value: "service.name=procurement-api,deployment.environment=K8s-OTEL,service.environment=K8s-OTEL"
         resources:
           requests:
-            memory: "128Mi"
+            memory: "256Mi"
             cpu: "100m"
           limits:
-            memory: "256Mi"
-            cpu: "300m"
+            memory: "512Mi"
+            cpu: "500m"
         readinessProbe:
           httpGet:
             path: /health
             port: 3000
           initialDelaySeconds: 10
-          periodSeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
         livenessProbe:
           httpGet:
-            path: /health
+            path: /health/live
             port: 3000
-          initialDelaySeconds: 15
-          periodSeconds: 10
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 5
 
 ---
 apiVersion: v1
@@ -624,3 +634,46 @@ spec:
             name: procurement-frontend
             port:
               number: 80
+
+---
+# =============================================================================
+# DATA RETENTION CRONJOB
+# =============================================================================
+# Purges procurement DB records older than DATA_RETENTION_DAYS (default 15).
+# Keeps PostgreSQL size bounded for long-running demo deployments.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: procurement-data-retention
+  namespace: demo-apps
+  labels:
+    app: procurement-api
+spec:
+  schedule: "0 3 * * *"
+  suspend: false
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: procurement-data-retention
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: purge
+            image: curlimages/curl:8.5.0
+            args:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "Running daily retention purge (15 days)..."
+              curl -sf -X POST http://procurement-api:3000/api/maintenance/purge \
+                -H 'Content-Type: application/json' \
+                -d '{"maxAgeDays":15}'
+              echo
+              echo "Retention purge request completed."

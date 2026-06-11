@@ -76,8 +76,136 @@ app.use((req, res, next) => {
 });
 
 // =============================================================================
+// DATA RETENTION
+// =============================================================================
+const RETENTION_DAYS = parseInt(process.env.DATA_RETENTION_DAYS || '15', 10);
+
+/**
+ * Delete old procurement records to keep database size bounded.
+ * Order respects foreign keys: payments → documents → invoices → audit_logs → vendors.
+ */
+async function purgeOldData(maxAgeDays) {
+  const interval = `${maxAgeDays} days`;
+  const results = {
+    payments: 0,
+    documents: 0,
+    invoices: 0,
+    audit_logs: 0,
+    vendors: 0
+  };
+
+  const paymentsResult = await pool.query(
+    `DELETE FROM payments WHERE created_at < NOW() - $1::interval RETURNING id`,
+    [interval]
+  );
+  results.payments = paymentsResult.rowCount;
+
+  const documentsResult = await pool.query(
+    `DELETE FROM documents
+     WHERE uploaded_at < NOW() - $1::interval
+        OR invoice_id IN (
+          SELECT id FROM invoices WHERE created_at < NOW() - $1::interval
+        )
+     RETURNING id`,
+    [interval]
+  );
+  results.documents = documentsResult.rowCount;
+
+  const invoicesResult = await pool.query(
+    `DELETE FROM invoices WHERE created_at < NOW() - $1::interval RETURNING id`,
+    [interval]
+  );
+  results.invoices = invoicesResult.rowCount;
+
+  const auditLogsResult = await pool.query(
+    `DELETE FROM audit_logs WHERE created_at < NOW() - $1::interval RETURNING id`,
+    [interval]
+  );
+  results.audit_logs = auditLogsResult.rowCount;
+
+  const vendorsResult = await pool.query(
+    `DELETE FROM vendors
+     WHERE name LIKE 'SIM-%'
+     AND created_at < NOW() - $1::interval
+     AND id NOT IN (SELECT DISTINCT vendor_id FROM invoices WHERE vendor_id IS NOT NULL)
+     RETURNING id`,
+    [interval]
+  );
+  results.vendors = vendorsResult.rowCount;
+
+  if (redisClient?.isOpen) {
+    await redisClient.del('dashboard_metrics');
+  }
+
+  return results;
+}
+
+/**
+ * Delete old simulator (SIM-*) records on a short interval.
+ */
+async function purgeSimulatorData(invoicesAgeMinutes, documentsAgeMinutes) {
+  const results = {
+    payments: 0,
+    invoices: 0,
+    documents: 0,
+    audit_logs: 0
+  };
+  const auditAgeMinutes = Math.max(invoicesAgeMinutes, documentsAgeMinutes);
+
+  const paymentsResult = await pool.query(
+    `DELETE FROM payments
+     WHERE invoice_id IN (
+       SELECT i.id FROM invoices i
+       JOIN vendors v ON i.vendor_id = v.id
+       WHERE v.name LIKE 'SIM-%'
+     )
+     AND created_at < NOW() - ($1 * INTERVAL '1 minute')
+     RETURNING id`,
+    [invoicesAgeMinutes]
+  );
+  results.payments = paymentsResult.rowCount;
+
+  const invoicesResult = await pool.query(
+    `DELETE FROM invoices
+     WHERE vendor_id IN (SELECT id FROM vendors WHERE name LIKE 'SIM-%')
+     AND created_at < NOW() - ($1 * INTERVAL '1 minute')
+     RETURNING id`,
+    [invoicesAgeMinutes]
+  );
+  results.invoices = invoicesResult.rowCount;
+
+  const documentsResult = await pool.query(
+    `DELETE FROM documents
+     WHERE original_filename LIKE 'SIM-%'
+     AND uploaded_at < NOW() - ($1 * INTERVAL '1 minute')
+     RETURNING id`,
+    [documentsAgeMinutes]
+  );
+  results.documents = documentsResult.rowCount;
+
+  const auditLogsResult = await pool.query(
+    `DELETE FROM audit_logs
+     WHERE created_at < NOW() - ($1 * INTERVAL '1 minute')
+     RETURNING id`,
+    [auditAgeMinutes]
+  );
+  results.audit_logs = auditLogsResult.rowCount;
+
+  if (redisClient?.isOpen) {
+    await redisClient.del('dashboard_metrics');
+  }
+
+  return results;
+}
+
+// =============================================================================
 // HEALTH CHECK
 // =============================================================================
+// Lightweight liveness endpoint — no database call (avoids probe timeouts under load)
+app.get('/health/live', (req, res) => {
+  res.json({ status: 'alive', service: 'procurement-api', timestamp: new Date().toISOString() });
+});
+
 app.get('/health', async (req, res) => {
   try {
     await pool.query('SELECT 1');
@@ -565,81 +693,29 @@ app.get('/api/payments', async (req, res) => {
  *   4. (Vendors are kept for reuse)
  */
 app.post('/api/simulator/cleanup', async (req, res) => {
-  // Support per-entity intervals or a single global interval
   let invoicesAgeMinutes, documentsAgeMinutes;
-  
+
   if (req.body.invoicesAgeMinutes || req.body.documentsAgeMinutes) {
-    // Per-entity intervals specified
     invoicesAgeMinutes = parseFloat(req.body.invoicesAgeMinutes) || 60;
     documentsAgeMinutes = parseFloat(req.body.documentsAgeMinutes) || 30;
   } else if (req.body.maxAgeMinutes) {
-    // Single interval in minutes
     invoicesAgeMinutes = documentsAgeMinutes = parseFloat(req.body.maxAgeMinutes);
   } else {
-    // Single interval in hours (default 24 hours)
     const maxAgeHours = parseFloat(req.body.maxAgeHours) || 24;
     invoicesAgeMinutes = documentsAgeMinutes = maxAgeHours * 60;
   }
-  
-  console.log(`Cleaning up simulator records: invoices/payments > ${invoicesAgeMinutes}min, documents > ${documentsAgeMinutes}min`);
-  
+
+  console.log(
+    `Cleaning up simulator records: invoices/payments > ${invoicesAgeMinutes}min, documents > ${documentsAgeMinutes}min`
+  );
+
   try {
-    const results = {
-      invoices: 0,
-      payments: 0,
-      documents: 0,
-      vendors: 0
-    };
-    
-    // Step 1: Delete payments for invoices linked to SIM- vendors
-    // Uses subquery to find invoices → vendors relationship
-    const paymentsResult = await pool.query(`
-      DELETE FROM payments 
-      WHERE invoice_id IN (
-        SELECT i.id FROM invoices i
-        JOIN vendors v ON i.vendor_id = v.id
-        WHERE v.name LIKE 'SIM-%'
-      )
-      AND created_at < NOW() - INTERVAL '${invoicesAgeMinutes} minutes'
-      RETURNING id
-    `);
-    results.payments = paymentsResult.rowCount;
-    
-    // Step 2: Delete invoices linked to SIM- vendors
-    const invoicesResult = await pool.query(`
-      DELETE FROM invoices 
-      WHERE vendor_id IN (SELECT id FROM vendors WHERE name LIKE 'SIM-%')
-      AND created_at < NOW() - INTERVAL '${invoicesAgeMinutes} minutes'
-      RETURNING id
-    `);
-    results.invoices = invoicesResult.rowCount;
-    
-    // Step 3: Delete old simulator documents (tracked by original_filename prefix)
-    const documentsResult = await pool.query(`
-      DELETE FROM documents 
-      WHERE original_filename LIKE 'SIM-%' 
-      AND uploaded_at < NOW() - INTERVAL '${documentsAgeMinutes} minutes'
-      RETURNING id
-    `);
-    results.documents = documentsResult.rowCount;
-    
-    // Note: SIM- vendors are kept for reuse (not deleted)
-    // If you want to clean up unused vendors, uncomment below:
-    // const vendorsResult = await pool.query(`
-    //   DELETE FROM vendors 
-    //   WHERE name LIKE 'SIM-%'
-    //   AND created_at < NOW() - INTERVAL '${maxAgeHours} hours'
-    //   AND id NOT IN (SELECT DISTINCT vendor_id FROM invoices WHERE vendor_id IS NOT NULL)
-    //   RETURNING id
-    // `);
-    // results.vendors = vendorsResult.rowCount;
-    
-    // Invalidate cache
-    await redisClient.del('dashboard_metrics');
-    
-    const totalDeleted = results.invoices + results.payments + results.documents;
-    console.log(`Cleanup complete: ${totalDeleted} records deleted (${results.payments} payments, ${results.invoices} invoices, ${results.documents} documents)`);
-    
+    const results = await purgeSimulatorData(invoicesAgeMinutes, documentsAgeMinutes);
+    const totalDeleted = results.invoices + results.payments + results.documents + results.audit_logs;
+    console.log(
+      `Cleanup complete: ${totalDeleted} records deleted (${results.payments} payments, ${results.invoices} invoices, ${results.documents} documents, ${results.audit_logs} audit_logs)`
+    );
+
     res.json({
       success: true,
       message: `Cleaned up ${totalDeleted} simulator records`,
@@ -647,6 +723,73 @@ app.post('/api/simulator/cleanup', async (req, res) => {
     });
   } catch (error) {
     console.error('Cleanup error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Long-term retention purge for all procurement data.
+ * POST /api/maintenance/purge
+ *
+ * Body options:
+ *   - { maxAgeDays: 15 }  - Override default (DATA_RETENTION_DAYS env, default 15)
+ */
+app.post('/api/maintenance/purge', async (req, res) => {
+  const maxAgeDays = parseInt(req.body.maxAgeDays || RETENTION_DAYS, 10);
+
+  if (!Number.isFinite(maxAgeDays) || maxAgeDays < 1) {
+    return res.status(400).json({ error: 'maxAgeDays must be a positive integer' });
+  }
+
+  console.log(`Running retention purge: deleting records older than ${maxAgeDays} days`);
+
+  try {
+    const deleted = await purgeOldData(maxAgeDays);
+    const totalDeleted = Object.values(deleted).reduce((sum, count) => sum + count, 0);
+    console.log(`Retention purge complete: ${totalDeleted} records deleted`, deleted);
+
+    res.json({
+      success: true,
+      maxAgeDays,
+      message: `Purged ${totalDeleted} records older than ${maxAgeDays} days`,
+      deleted
+    });
+  } catch (error) {
+    console.error('Retention purge error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Database growth stats for monitoring retention effectiveness.
+ * GET /api/maintenance/stats
+ */
+app.get('/api/maintenance/stats', async (req, res) => {
+  try {
+    const [tableCounts, dbSize, oldestRecords] = await Promise.all([
+      pool.query(`
+        SELECT 'vendors' AS entity, COUNT(*)::int AS count FROM vendors
+        UNION ALL SELECT 'invoices', COUNT(*)::int FROM invoices
+        UNION ALL SELECT 'payments', COUNT(*)::int FROM payments
+        UNION ALL SELECT 'documents', COUNT(*)::int FROM documents
+        UNION ALL SELECT 'audit_logs', COUNT(*)::int FROM audit_logs
+      `),
+      pool.query(`SELECT pg_size_pretty(pg_database_size(current_database())) AS size`),
+      pool.query(`
+        SELECT
+          (SELECT MIN(created_at) FROM invoices) AS oldest_invoice,
+          (SELECT MIN(uploaded_at) FROM documents) AS oldest_document,
+          (SELECT MIN(created_at) FROM audit_logs) AS oldest_audit_log
+      `)
+    ]);
+
+    res.json({
+      retentionDays: RETENTION_DAYS,
+      databaseSize: dbSize.rows[0].size,
+      tableCounts: tableCounts.rows,
+      oldestRecords: oldestRecords.rows[0]
+    });
+  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
