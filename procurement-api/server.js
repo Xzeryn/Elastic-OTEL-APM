@@ -165,6 +165,23 @@ async function purgeSimulatorData(invoicesAgeMinutes, documentsAgeMinutes) {
   );
   results.payments = paymentsResult.rowCount;
 
+  // Delete documents before invoices to satisfy documents_invoice_id_fkey
+  const documentsResult = await pool.query(
+    `DELETE FROM documents
+     WHERE (
+       (original_filename LIKE 'SIM-%' AND uploaded_at < NOW() - ($1 * INTERVAL '1 minute'))
+       OR invoice_id IN (
+         SELECT i.id FROM invoices i
+         JOIN vendors v ON i.vendor_id = v.id
+         WHERE v.name LIKE 'SIM-%'
+         AND i.created_at < NOW() - ($2 * INTERVAL '1 minute')
+       )
+     )
+     RETURNING id`,
+    [documentsAgeMinutes, invoicesAgeMinutes]
+  );
+  results.documents = documentsResult.rowCount;
+
   const invoicesResult = await pool.query(
     `DELETE FROM invoices
      WHERE vendor_id IN (SELECT id FROM vendors WHERE name LIKE 'SIM-%')
@@ -173,15 +190,6 @@ async function purgeSimulatorData(invoicesAgeMinutes, documentsAgeMinutes) {
     [invoicesAgeMinutes]
   );
   results.invoices = invoicesResult.rowCount;
-
-  const documentsResult = await pool.query(
-    `DELETE FROM documents
-     WHERE original_filename LIKE 'SIM-%'
-     AND uploaded_at < NOW() - ($1 * INTERVAL '1 minute')
-     RETURNING id`,
-    [documentsAgeMinutes]
-  );
-  results.documents = documentsResult.rowCount;
 
   const auditLogsResult = await pool.query(
     `DELETE FROM audit_logs

@@ -57,6 +57,16 @@ public class PaymentController {
             logger.info("[Trace] traceparent: {}", traceparent);
         }
     }
+
+    private Long parseLong(Object value, String fieldName) {
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        if (value instanceof String) {
+            return Long.parseLong((String) value);
+        }
+        throw new IllegalArgumentException(fieldName + " must be a number");
+    }
     
     /**
      * Get all payments.
@@ -97,7 +107,7 @@ public class PaymentController {
             @RequestHeader(value = "traceparent", required = false) String traceparent) {
         logRequest("POST", "/api/payments/validate", traceparent);
         
-        Long invoiceId = ((Number) request.get("invoice_id")).longValue();
+        Long invoiceId = parseLong(request.get("invoice_id"), "invoice_id");
         BigDecimal amount = new BigDecimal(request.get("amount").toString());
         
         logger.info("Validating payment for invoice: {}, amount: {}", invoiceId, amount);
@@ -158,7 +168,7 @@ public class PaymentController {
             @RequestHeader(value = "traceparent", required = false) String traceparent) {
         logRequest("POST", "/api/payments/process", traceparent);
         
-        Long invoiceId = ((Number) request.get("invoice_id")).longValue();
+        Long invoiceId = parseLong(request.get("invoice_id"), "invoice_id");
         BigDecimal amount = new BigDecimal(request.get("amount").toString());
         String invoiceNumber = (String) request.getOrDefault("invoice_number", "UNKNOWN");
         

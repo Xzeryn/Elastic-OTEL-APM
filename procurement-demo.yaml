@@ -335,7 +335,7 @@ spec:
     spec:
       containers:
       - name: procurement-api
-        image: skarter/procurement-api:v8
+        image: skarter/procurement-api:v9
         ports:
         - containerPort: 3000
         env:
@@ -509,7 +509,7 @@ spec:
     spec:
       containers:
       - name: payment-service
-        image: skarter/payment-service:v1
+        image: skarter/payment-service:v2
         ports:
         - containerPort: 8080
         env:
