@@ -12,9 +12,10 @@
  * The API key never reaches the browser; the collector already holds it.
  *
  * Auto-instrumented by EDOT Browser:
- * - Page loads and route changes
- * - fetch/XHR calls (with W3C traceparent for backend correlation)
- * - User clicks, long tasks, uncaught errors, Web Vitals
+ * - Page load timing, fetch/XHR calls (with W3C traceparent for backend
+ *   correlation), clicks, uncaught errors, Web Vitals
+ * telemetry.js names the resulting transactions by route and by the clicked
+ * element's data-transaction-name.
  * =============================================================================
  */
 
@@ -22,6 +23,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { startBrowserSdk } from '@elastic/opentelemetry-browser';
+import { handleClickSpan, startPageLoad } from './telemetry';
 import './App.css';
 import App from './App';
 
@@ -76,8 +78,19 @@ startBrowserSdk({
       propagateTraceHeaderCorsUrls: traceHeaderCorsUrls,
       ignoreUrls: healthCheckUrls,
     },
+    // Clicks become "Click - <data-transaction-name>" operations (see telemetry.js)
+    '@opentelemetry/instrumentation-user-interaction': {
+      shouldPreventSpanCreation: handleClickSpan,
+    },
+    // Long tasks are always root spans, so each would be listed as its own
+    // "longtask" transaction. Responsiveness is still covered by Web Vitals (INP).
+    '@opentelemetry/instrumentation-long-task': {
+      enabled: false,
+    },
   },
 });
+
+startPageLoad();
 
 // =============================================================================
 // REACT APPLICATION RENDER

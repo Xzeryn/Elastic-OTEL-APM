@@ -14,17 +14,18 @@
  * =============================================================================
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useLayoutEffect, useRef } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { traceAction, recordError, reportError } from './telemetry';
+import { traceAction, traceLoad, recordError, startRouteChange } from './telemetry';
 
 // =============================================================================
 // TELEMETRY
 // =============================================================================
-// EDOT Browser (started in index.js) auto-instruments page loads, routes,
-// fetch calls, and clicks. Business actions are wrapped in traceAction() so
-// they appear in Kibana as named spans ("Click - Upload Document") with
-// custom attributes, and their API calls continue the same trace.
+// Transactions in Kibana are named by route ("/invoices") for page loads and
+// route changes, and "Click - <data-transaction-name>" for clicks (see
+// telemetry.js). Business actions use traceAction() to add custom attributes
+// to the click's transaction; page data loads use traceLoad() so their API
+// calls join the current transaction's trace.
 //
 // Interactive elements keep their data-transaction-name attributes; the
 // traffic simulator uses them as selectors.
@@ -410,7 +411,7 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const fetchDashboard = useCallback(() => traceAction('Load Dashboard', {}, async (span) => {
+  const fetchDashboard = useCallback(() => traceLoad('Load Dashboard', async (span) => {
     try {
       setLoading(true);
       const response = await fetch(`${API_BASE}/dashboard`);
@@ -566,18 +567,18 @@ const Vendors = () => {
   const [showForm, setShowForm] = useState(false);
   const [formData, setFormData] = useState({ name: '', email: '', phone: '' });
 
-  const fetchVendors = useCallback(async () => {
+  const fetchVendors = useCallback(() => traceLoad('Load Vendors', async (span) => {
     try {
       setLoading(true);
       const response = await fetch(`${API_BASE}/vendors`);
       const data = await response.json();
       setVendors(data.vendors || []);
     } catch (err) {
-      reportError('Load Vendors', err);
+      recordError(span, err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }), []);
 
   useEffect(() => {
     fetchVendors();
@@ -710,7 +711,7 @@ const Invoices = () => {
     setCurrentPage(1); // Reset to first page when sorting
   };
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(() => traceLoad('Load Invoices', async (span) => {
     try {
       setLoading(true);
       const [invRes, venRes] = await Promise.all([
@@ -722,11 +723,11 @@ const Invoices = () => {
       setInvoices(invData.invoices || []);
       setVendors(venData.vendors || []);
     } catch (err) {
-      reportError('Load Invoices', err);
+      recordError(span, err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }), []);
 
   useEffect(() => {
     fetchData();
@@ -1038,7 +1039,7 @@ const Payments = () => {
     setCurrentPage(1);
   };
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(() => traceLoad('Load Payments', async (span) => {
     try {
       setLoading(true);
       const [payRes, invRes] = await Promise.all([
@@ -1050,11 +1051,11 @@ const Payments = () => {
       setPayments(payData.payments || []);
       setInvoices((invData.invoices || []).filter(i => i.status === 'submitted' || i.status === 'pending'));
     } catch (err) {
-      reportError('Load Payments', err);
+      recordError(span, err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }), []);
 
   useEffect(() => {
     fetchData();
@@ -1300,7 +1301,7 @@ const Documents = () => {
     setCurrentPage(1);
   };
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(() => traceLoad('Load Documents', async (span) => {
     try {
       setLoading(true);
       const [docRes, invRes] = await Promise.all([
@@ -1312,11 +1313,11 @@ const Documents = () => {
       setDocuments(docData.documents || []);
       setInvoices(invData.invoices || []);
     } catch (err) {
-      reportError('Load Documents', err);
+      recordError(span, err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }), []);
 
   useEffect(() => {
     fetchData();
@@ -1629,6 +1630,17 @@ function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const [showArchModal, setShowArchModal] = useState(false);
+
+  // Layout effects run before the new page's data-loading effects, so the
+  // route change is already in progress when they call traceLoad().
+  const isInitialRoute = useRef(true);
+  useLayoutEffect(() => {
+    if (isInitialRoute.current) {
+      isInitialRoute.current = false; // covered by the page-load operation
+      return;
+    }
+    startRouteChange(location.pathname);
+  }, [location.pathname]);
 
   const tabs = [
     { id: 'dashboard', path: '/', label: 'Dashboard', icon: Icons.Dashboard },

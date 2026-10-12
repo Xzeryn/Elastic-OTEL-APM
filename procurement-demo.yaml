@@ -577,7 +577,7 @@ spec:
     spec:
       containers:
       - name: procurement-frontend
-        image: skarter/procurement-frontend:v17
+        image: skarter/procurement-frontend:v19
         imagePullPolicy: Always
         ports:
         - containerPort: 80
