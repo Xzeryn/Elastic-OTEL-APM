@@ -1,7 +1,7 @@
 # =============================================================================
 # PROCUREMENT FRONTEND DOCKERFILE
 # =============================================================================
-# React application with Elastic RUM for Government Procurement System
+# React application with EDOT Browser (OpenTelemetry) for Government Procurement System
 # Multi-stage build: Node.js for building, Nginx for serving
 # =============================================================================
 
@@ -14,7 +14,9 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 
-# Copy source files
+# Copy source files and optional build-time env (REACT_APP_* values are compiled
+# into the bundle). .env.template is listed so the wildcard always has a match.
+COPY .env* ./
 COPY public ./public
 COPY src ./src
 

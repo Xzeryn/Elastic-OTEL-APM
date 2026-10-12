@@ -16,34 +16,19 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { ApmRoutes } from '@elastic/apm-rum-react';
+import { traceAction, recordError, reportError } from './telemetry';
 
 // =============================================================================
-// APM HELPER FUNCTION
+// TELEMETRY
 // =============================================================================
-// Per Elastic RUM documentation (https://www.elastic.co/docs/reference/apm/agents/rum-js/agent-api),
-// we access the APM instance at RUNTIME via a helper function, not at module load time.
-// This ensures the agent is initialized before we try to use it.
+// EDOT Browser (started in index.js) auto-instruments page loads, routes,
+// fetch calls, and clicks. Business actions are wrapped in traceAction() so
+// they appear in Kibana as named spans ("Click - Upload Document") with
+// custom attributes, and their API calls continue the same trace.
 //
-// IMPORTANT: The RUM agent is initialized in index.js and stored in window.__ELASTIC_APM__.
-// We must NOT access it at module load time because index.js sets it AFTER importing App.js.
-//
-// USAGE PATTERN FOR CUSTOM LABELS:
-// --------------------------------
-// 1. Get APM instance at runtime:     const apm = getApm();
-// 2. Get current auto-transaction:    const transaction = apm?.getCurrentTransaction();
-// 3. Add custom labels:               transaction?.addLabels({ 'key': 'value' });
-//
-// DO NOT create new transactions with apm.startTransaction() - this breaks the
-// auto-captured transaction and loses span visibility. Instead, add labels to
-// the existing auto-captured transaction (named via data-transaction-name attribute).
-//
-// TRANSACTION NAMING:
-// -------------------
-// Interactive elements use data-transaction-name="Action Name" attribute.
-// The RUM agent creates "Click - Action Name" transactions automatically.
+// Interactive elements keep their data-transaction-name attributes; the
+// traffic simulator uses them as selectors.
 // =============================================================================
-const getApm = () => window.__ELASTIC_APM__;
 
 // =============================================================================
 // ICONS (SVG Components)
@@ -425,11 +410,7 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const fetchDashboard = useCallback(async () => {
-    // Get the auto-captured transaction and add custom labels
-    const apm = getApm();
-    const transaction = apm?.getCurrentTransaction();
-
+  const fetchDashboard = useCallback(() => traceAction('Load Dashboard', {}, async (span) => {
     try {
       setLoading(true);
       const response = await fetch(`${API_BASE}/dashboard`);
@@ -437,18 +418,14 @@ const Dashboard = () => {
       const result = await response.json();
       setData(result);
       setError(null);
-      
-      if (transaction) {
-        transaction.addLabels({ 'dashboard.loaded': true });
-      }
+      span.setAttributes({ 'dashboard.loaded': true });
     } catch (err) {
       setError(err.message);
-      if (apm) apm.captureError(err);
+      recordError(span, err);
     } finally {
       setLoading(false);
-      // Don't manually end - let the auto-transaction handle its lifecycle
     }
-  }, []);
+  }), []);
 
   useEffect(() => {
     fetchDashboard();
@@ -590,15 +567,13 @@ const Vendors = () => {
   const [formData, setFormData] = useState({ name: '', email: '', phone: '' });
 
   const fetchVendors = useCallback(async () => {
-    const apm = getApm();
-
     try {
       setLoading(true);
       const response = await fetch(`${API_BASE}/vendors`);
       const data = await response.json();
       setVendors(data.vendors || []);
     } catch (err) {
-      if (apm) apm.captureError(err);
+      reportError('Load Vendors', err);
     } finally {
       setLoading(false);
     }
@@ -608,29 +583,24 @@ const Vendors = () => {
     fetchVendors();
   }, [fetchVendors]);
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
-    const apm = getApm();
-    const transaction = apm?.getCurrentTransaction();
-    
-    if (transaction) {
-      transaction.addLabels({ 'vendor.name': formData.name });
-    }
-
-    try {
-      const response = await fetch(`${API_BASE}/vendors`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData)
-      });
-      if (response.ok) {
-        setFormData({ name: '', email: '', phone: '' });
-        setShowForm(false);
-        fetchVendors();
+    return traceAction('Click - Create Vendor', { 'vendor.name': formData.name }, async (span) => {
+      try {
+        const response = await fetch(`${API_BASE}/vendors`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(formData)
+        });
+        if (response.ok) {
+          setFormData({ name: '', email: '', phone: '' });
+          setShowForm(false);
+          fetchVendors();
+        }
+      } catch (err) {
+        recordError(span, err);
       }
-    } catch (err) {
-      if (apm) apm.captureError(err);
-    }
+    });
   };
 
   return (
@@ -741,8 +711,6 @@ const Invoices = () => {
   };
 
   const fetchData = useCallback(async () => {
-    const apm = getApm();
-
     try {
       setLoading(true);
       const [invRes, venRes] = await Promise.all([
@@ -754,7 +722,7 @@ const Invoices = () => {
       setInvoices(invData.invoices || []);
       setVendors(venData.vendors || []);
     } catch (err) {
-      if (apm) apm.captureError(err);
+      reportError('Load Invoices', err);
     } finally {
       setLoading(false);
     }
@@ -764,39 +732,27 @@ const Invoices = () => {
     fetchData();
   }, [fetchData]);
 
-  const handleCreate = async (e) => {
+  const handleCreate = (e) => {
     e.preventDefault();
-    const apm = getApm();
-    const transaction = apm?.getCurrentTransaction();
-    
-    if (transaction) {
-      transaction.addLabels({ 'invoice.amount': formData.amount });
-    }
-
-    try {
-      const response = await fetch(`${API_BASE}/invoices`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData)
-      });
-      if (response.ok) {
-        setFormData({ vendor_id: '', amount: '', description: '' });
-        setShowForm(false);
-        fetchData();
+    return traceAction('Click - Create Invoice', { 'invoice.amount': formData.amount }, async (span) => {
+      try {
+        const response = await fetch(`${API_BASE}/invoices`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(formData)
+        });
+        if (response.ok) {
+          setFormData({ vendor_id: '', amount: '', description: '' });
+          setShowForm(false);
+          fetchData();
+        }
+      } catch (err) {
+        recordError(span, err);
       }
-    } catch (err) {
-      if (apm) apm.captureError(err);
-    }
+    });
   };
 
-  const handleSubmit = async (invoiceId) => {
-    const apm = getApm();
-    const transaction = apm?.getCurrentTransaction();
-    
-    if (transaction) {
-      transaction.addLabels({ 'invoice.id': invoiceId });
-    }
-
+  const handleSubmit = (invoiceId) => traceAction('Click - Submit Invoice', { 'invoice.id': invoiceId }, async (span) => {
     try {
       setSubmitting(invoiceId);
       const response = await fetch(`${API_BASE}/invoices/${invoiceId}/submit`, {
@@ -804,25 +760,22 @@ const Invoices = () => {
         headers: { 'Content-Type': 'application/json' }
       });
       const result = await response.json();
-      
-      if (transaction) {
-        transaction.addLabels({
-          'submit.success': result.success,
-          'document.valid': result.documentValidation?.valid,
-          'payment.valid': result.paymentValidation?.valid
-        });
-      }
-      
+
+      span.setAttributes({
+        'submit.success': result.success,
+        'document.valid': result.documentValidation?.valid,
+        'payment.valid': result.paymentValidation?.valid
+      });
+
       fetchData();
     } catch (err) {
-      if (apm) apm.captureError(err);
+      recordError(span, err);
     } finally {
       setSubmitting(null);
     }
-  };
+  });
 
-  const handleApprove = async (invoiceId) => {
-    const apm = getApm();
+  const handleApprove = (invoiceId) => traceAction('Click - Approve Invoice', { 'invoice.id': invoiceId }, async (span) => {
     try {
       setApproving(invoiceId);
       await fetch(`${API_BASE}/invoices/${invoiceId}/approve`, {
@@ -831,11 +784,11 @@ const Invoices = () => {
       });
       fetchData();
     } catch (err) {
-      if (apm) apm.captureError(err);
+      recordError(span, err);
     } finally {
       setApproving(null);
     }
-  };
+  });
 
   // Sorting function
   const sortedInvoices = [...invoices].sort((a, b) => {
@@ -1086,8 +1039,6 @@ const Payments = () => {
   };
 
   const fetchData = useCallback(async () => {
-    const apm = getApm();
-
     try {
       setLoading(true);
       const [payRes, invRes] = await Promise.all([
@@ -1099,7 +1050,7 @@ const Payments = () => {
       setPayments(payData.payments || []);
       setInvoices((invData.invoices || []).filter(i => i.status === 'submitted' || i.status === 'pending'));
     } catch (err) {
-      if (apm) apm.captureError(err);
+      reportError('Load Payments', err);
     } finally {
       setLoading(false);
     }
@@ -1109,14 +1060,7 @@ const Payments = () => {
     fetchData();
   }, [fetchData]);
 
-  const processPayment = async (invoiceId) => {
-    const apm = getApm();
-    const transaction = apm?.getCurrentTransaction();
-    
-    if (transaction) {
-      transaction.addLabels({ 'invoice.id': invoiceId });
-    }
-
+  const processPayment = (invoiceId) => traceAction('Click - Process Payment', { 'invoice.id': invoiceId }, async (span) => {
     try {
       setProcessing(invoiceId);
       const response = await fetch(`${API_BASE}/payments/process`, {
@@ -1125,22 +1069,20 @@ const Payments = () => {
         body: JSON.stringify({ invoice_id: invoiceId })
       });
       const result = await response.json();
-      
-      if (transaction) {
-        transaction.addLabels({
-          'payment.success': result.success,
-          'payment.number': result.payment_number,
-          'payment.amount': result.amount
-        });
-      }
-      
+
+      span.setAttributes({
+        'payment.success': result.success,
+        'payment.number': result.payment_number,
+        'payment.amount': result.amount
+      });
+
       fetchData();
     } catch (err) {
-      if (apm) apm.captureError(err);
+      recordError(span, err);
     } finally {
       setProcessing(null);
     }
-  };
+  });
 
   // Sorting function
   const sortedPayments = [...payments].sort((a, b) => {
@@ -1359,8 +1301,6 @@ const Documents = () => {
   };
 
   const fetchData = useCallback(async () => {
-    const apm = getApm();
-
     try {
       setLoading(true);
       const [docRes, invRes] = await Promise.all([
@@ -1372,7 +1312,7 @@ const Documents = () => {
       setDocuments(docData.documents || []);
       setInvoices(invData.invoices || []);
     } catch (err) {
-      if (apm) apm.captureError(err);
+      reportError('Load Documents', err);
     } finally {
       setLoading(false);
     }
@@ -1390,27 +1330,20 @@ const Documents = () => {
     }
   };
 
-  const handleUpload = async () => {
+  const handleUpload = () => {
     if (!selectedFile) return;
 
-    // Get APM instance and the auto-captured transaction at runtime
-    // Per Elastic RUM documentation, we add labels to the existing auto-captured
-    // transaction rather than creating a new one, to preserve full span visibility
-    const apm = getApm();
-    const transaction = apm?.getCurrentTransaction();
-    
-    // Add file metadata labels to the auto-captured "Click - Upload Document" transaction
-    // Labels are indexed and searchable in Elasticsearch
-    if (transaction) {
-      transaction.addLabels({
-        'file.name': selectedFile.name,
-        'file.size_bytes': selectedFile.size,
-        'file.size_mb': (selectedFile.size / (1024 * 1024)).toFixed(2),
-        'file.type': selectedFile.type || 'unknown',
-        'session.id': window.__APM_SESSION_ID__ || 'unknown'
-      });
-    }
+    // File metadata attributes are indexed and searchable in Elasticsearch
+    return traceAction('Click - Upload Document', {
+      'file.name': selectedFile.name,
+      'file.size_bytes': selectedFile.size,
+      'file.size_mb': (selectedFile.size / (1024 * 1024)).toFixed(2),
+      'file.type': selectedFile.type || 'unknown',
+      'session.id': window.__APM_SESSION_ID__ || 'unknown'
+    }, (span) => uploadDocument(span));
+  };
 
+  const uploadDocument = async (span) => {
     const startTime = Date.now();
     setUploading(true);
     setUploadStatus({ message: 'Uploading document...', type: 'progress' });
@@ -1445,16 +1378,13 @@ const Documents = () => {
           type: 'success'
         });
         
-        // Add success labels to the transaction
-        if (transaction) {
-          transaction.addLabels({
-            'upload.success': true,
-            'upload.duration_ms': uploadDuration,
-            'document.reference': result.reference,
-            'processing.total_ms': result.processing?.total_ms
-          });
-        }
-        
+        span.setAttributes({
+          'upload.success': true,
+          'upload.duration_ms': uploadDuration,
+          'document.reference': result.reference,
+          'processing.total_ms': result.processing?.total_ms
+        });
+
         setSelectedFile(null);
         fetchData();
       } else {
@@ -1462,13 +1392,10 @@ const Documents = () => {
       }
     } catch (err) {
       setUploadStatus({ message: `Upload failed: ${err.message}`, type: 'error' });
-      if (apm) apm.captureError(err);
-      if (transaction) {
-        transaction.addLabels({ 'upload.success': false, 'upload.error': err.message });
-      }
+      recordError(span, err);
+      span.setAttributes({ 'upload.success': false, 'upload.error': err.message });
     } finally {
       setUploading(false);
-      // Don't manually end the transaction - let the auto-instrumentation handle it
     }
   };
 
@@ -1741,13 +1668,13 @@ function App() {
       </nav>
 
       <main className="main-content">
-        <ApmRoutes>
+        <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/vendors" element={<Vendors />} />
           <Route path="/invoices" element={<Invoices />} />
           <Route path="/payments" element={<Payments />} />
           <Route path="/documents" element={<Documents />} />
-        </ApmRoutes>
+        </Routes>
       </main>
 
       <footer className="App-footer">

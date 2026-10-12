@@ -1,127 +1,83 @@
 /**
  * =============================================================================
- * PROCUREMENT FRONTEND - Entry Point with Elastic RUM
+ * PROCUREMENT FRONTEND - Entry Point with EDOT Browser (OpenTelemetry)
  * =============================================================================
- * This file initializes Elastic Real User Monitoring (RUM) for the React 
- * frontend application. RUM captures browser-side performance metrics and
- * enables distributed tracing from user clicks through backend services.
- * 
- * Key RUM Features Enabled:
- * - Page load performance tracking
- * - Route change transactions (via ApmRoutes)
- * - User interactions and custom transactions
- * - Distributed tracing with backend services
- * - Long task monitoring
- * - User and session context
+ * This file starts the Elastic Distribution of OpenTelemetry Browser SDK
+ * before React renders, so the full page load is captured.
+ *
+ * Telemetry path:
+ *   Browser --OTLP/HTTP--> /otlp/ (nginx, same origin)
+ *           --> EDOT Collector (adds Elastic API key) --> Elastic Serverless
+ *
+ * The API key never reaches the browser; the collector already holds it.
+ *
+ * Auto-instrumented by EDOT Browser:
+ * - Page loads and route changes
+ * - fetch/XHR calls (with W3C traceparent for backend correlation)
+ * - User clicks, long tasks, uncaught errors, Web Vitals
  * =============================================================================
  */
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
-import { init as initApm } from '@elastic/apm-rum';
+import { startBrowserSdk } from '@elastic/opentelemetry-browser';
 import './App.css';
 import App from './App';
 
 // =============================================================================
-// ELASTIC APM RUM INITIALIZATION
+// SESSION CONTEXT
 // =============================================================================
-// The RUM agent is initialized BEFORE rendering to capture the full page load.
-//
-// CONFIGURATION:
-// Environment variables are set in .env file (see .env.template for reference).
-// These are baked in at build time via Create React App's REACT_APP_* convention.
-// =============================================================================
-const apm = initApm({
-  // Service identification - matches what appears in Kibana APM
-  serviceName: 'procurement-frontend',
-  serviceVersion: '1.0.0',
-  environment: 'K8s-OTEL',
-  
-  // APM Server configuration - RUM data goes directly to APM Server
-  // Set REACT_APP_APM_SERVER_URL in .env file
-  serverUrl: process.env.REACT_APP_APM_SERVER_URL,
-  
-  // ==========================================================================
-  // DISTRIBUTED TRACING CONFIGURATION
-  // ==========================================================================
-  // These origins define which backend API calls will include the traceparent
-  // header, enabling end-to-end trace correlation from browser to database.
-  // Set REACT_APP_API_DOMAIN in .env file to match your Ingress hostname.
-  // ==========================================================================
-  distributedTracingOrigins: [
-    window.location.origin,
-    process.env.REACT_APP_API_DOMAIN,
-  ].filter(Boolean),
-  propagateTracestate: true,
-  
-  // Instrumentation settings
-  instrument: true,
-  transactionSampleRate: 1.0,  // Capture 100% of transactions for demo
-  breakdownMetrics: true,
-  
-  // Log level for debugging (use 'warn' in production)
-  logLevel: 'debug',
-  
-  // ==========================================================================
-  // LONG TASK MONITORING
-  // ==========================================================================
-  // Captures JavaScript tasks that block the main thread for > 50ms
-  // ==========================================================================
-  monitorLongtasks: true,
-  
-  // ==========================================================================
-  // TRANSACTION FILTERING
-  // ==========================================================================
-  // Ignore noisy/utility transactions that don't provide value
-  // ==========================================================================
-  ignoreTransactions: [
-    /\/health/,
-    /\/favicon/,
-    /\/robots\.txt/,
-    /\/manifest\.json/,
-    /hot-update/
-  ]
-});
-
-// =============================================================================
-// SESSION AND USER CONTEXT
-// =============================================================================
-// Setting user context enables tracking sessions across page views
-// This helps correlate user journeys in Kibana APM
+// A per-tab session ID lets you follow one user's journey in Kibana.
 // =============================================================================
 const generateSessionId = () => {
-  return 'sess_' + Math.random().toString(36).substring(2, 15) + 
+  return 'sess_' + Math.random().toString(36).substring(2, 15) +
          Math.random().toString(36).substring(2, 15);
 };
 
 const sessionId = sessionStorage.getItem('procurement_session_id') || generateSessionId();
 sessionStorage.setItem('procurement_session_id', sessionId);
-
-// Set user context for APM
-apm.setUserContext({
-  id: sessionId,
-  username: `procurement-user-${sessionId.slice(-6)}`
-});
-
-// Set custom context with application metadata
-apm.setCustomContext({
-  sessionId: sessionId,
-  appVersion: '1.0.0',
-  buildTimestamp: new Date().toISOString(),
-  platform: navigator.platform,
-  language: navigator.language,
-  screenResolution: `${window.screen.width}x${window.screen.height}`,
-  viewportSize: `${window.innerWidth}x${window.innerHeight}`,
-  featureFlags: {
-    newInvoiceUI: true,
-    documentPreview: true
-  }
-});
-
-// Make APM available globally for custom transactions
-window.__ELASTIC_APM__ = apm;
 window.__APM_SESSION_ID__ = sessionId;
+
+// =============================================================================
+// EDOT BROWSER INITIALIZATION
+// =============================================================================
+// otlpEndpoint must be an absolute URL ending in "/" - the SDK appends
+// "v1/traces", "v1/metrics", and "v1/logs" directly to it.
+// =============================================================================
+const healthCheckUrls = [/\/health$/, /\/api\/services\/[^/]+\/health$/];
+
+const traceHeaderCorsUrls = [process.env.REACT_APP_API_DOMAIN]
+  .filter(Boolean)
+  .map((origin) => new RegExp('^' + origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+startBrowserSdk({
+  serviceName: 'procurement-frontend',
+  serviceVersion: '1.0.0',
+  otlpEndpoint: `${window.location.origin}/otlp/`,
+  logLevel: 'info',
+  sampleRate: 1.0,  // Capture 100% of traces for demo
+  resourceAttributes: {
+    'deployment.environment': 'K8s-OTEL',
+    'deployment.environment.name': 'K8s-OTEL',
+    'session.id': sessionId,
+    'user.id': sessionId,
+    'user.name': `procurement-user-${sessionId.slice(-6)}`,
+    'app.feature_flags': ['newInvoiceUI', 'documentPreview'],
+  },
+  instrumentations: {
+    '@opentelemetry/instrumentation-fetch': {
+      // Same-origin /api calls get traceparent automatically
+      propagateTraceHeaderCorsUrls: traceHeaderCorsUrls,
+      // The service status panel polls health endpoints every 15s
+      ignoreUrls: healthCheckUrls,
+    },
+    '@opentelemetry/instrumentation-xml-http-request': {
+      propagateTraceHeaderCorsUrls: traceHeaderCorsUrls,
+      ignoreUrls: healthCheckUrls,
+    },
+  },
+});
 
 // =============================================================================
 // REACT APPLICATION RENDER
